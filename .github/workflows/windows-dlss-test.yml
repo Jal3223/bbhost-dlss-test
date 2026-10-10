@@ -1,0 +1,196 @@
+name: Unofficial Windows DLSS test build
+
+on:
+  workflow_dispatch:
+    inputs:
+      check_ngx_bridge:
+        description: 'Also compile-check NGX on Windows (no NVIDIA binaries uploaded)'
+        type: boolean
+        default: false
+      nvidia_sdk_license_accepted:
+        description: 'I have read and accepted the NVIDIA RTX SDK license for optional NGX compilation'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: unofficial-windows-dlss-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows-host:
+    name: Cross-compile Windows host
+    if: github.repository == 'Jal3223/bbhost-dlss-test' && github.event.repository.private == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container: archlinux:base
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Install build tools from Arch's official repositories
+        run: |
+          pacman -Syu --noconfirm --needed base-devel git clang lld llvm cmake ninja nasm curl zip unzip python mingw-w64-gcc mingw-w64-winpthreads vulkan-headers wine
+      - name: Check out this fork at the dispatched commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify reviewed source and artifact policy
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          python tools/ci/check_test_build.py
+      - name: Build the Windows host and existing CPU regression tests
+        env:
+          BBHOST_VERSION: v0.0.0-dlss-test
+          CMAKE_BUILD_PARALLEL_LEVEL: '2'
+        run: bash tools/ci/build_windows_test.sh
+      - name: Package only approved files and corresponding public source
+        run: python tools/ci/package_windows_test.py
+      - name: Upload the unofficial test package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: host-components-${{ github.sha }}
+          retention-days: 1
+          if-no-files-found: error
+          path: |
+            dist/bbhost-dlss-test-windows.zip
+            dist/bbhost-dlss-test-source.tar.gz
+            dist/bbhost-dlss-test-dependencies.tar.gz
+            dist/SHA256SUMS
+      - name: Show build diagnostics on failure
+        if: failure()
+        run: tail -n 80 build/win-deps/*.log build-win-*.log || true
+
+  windows-verification:
+    name: Run existing tests on Windows
+    needs: windows-host
+    runs-on: windows-2022
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Download only this run's test package
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: host-components-${{ github.sha }}
+          path: downloads
+      - name: Fetch redistributable Vulkan loader and headers at reviewed pins
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: KhronosGroup/Vulkan-Loader
+          ref: a9e72c66d5cb79911eb9a9063bf4016dd0a3a123
+          path: .ci-public/vulkan-loader
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: KhronosGroup/Vulkan-Headers
+          ref: 8864cdc896bbc2a9b6eb36b3218fc9ef57908d77
+          path: .ci-public/vulkan-headers
+          persist-credentials: false
+      - name: Build and add the open-source Vulkan loader
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Expand-Archive downloads/bbhost-dlss-test-windows.zip -DestinationPath kit
+          cmake -S .ci-public/vulkan-headers -B .ci-public/headers-build -G 'Visual Studio 17 2022' -A x64 "-DCMAKE_INSTALL_PREFIX=$PWD/.ci-public/prefix"
+          if ($LASTEXITCODE -ne 0) { throw 'Vulkan headers configure failed' }
+          cmake --install .ci-public/headers-build --config Release
+          if ($LASTEXITCODE -ne 0) { throw 'Vulkan headers install failed' }
+          cmake -S .ci-public/vulkan-loader -B .ci-public/loader-build -G 'Visual Studio 17 2022' -A x64 "-DCMAKE_PREFIX_PATH=$PWD/.ci-public/prefix" -DBUILD_TESTS=OFF
+          if ($LASTEXITCODE -ne 0) { throw 'Vulkan loader configure failed' }
+          cmake --build .ci-public/loader-build --config Release --parallel 2
+          if ($LASTEXITCODE -ne 0) { throw 'Vulkan loader build failed' }
+          Copy-Item .ci-public/loader-build/loader/Release/vulkan-1.dll kit
+          New-Item -ItemType Directory -Force kit/licenses/vulkan-loader | Out-Null
+          Copy-Item .ci-public/vulkan-loader/LICENSE* kit/licenses/vulkan-loader
+          New-Item -ItemType Directory -Force kit/licenses/vulkan-headers | Out-Null
+          Copy-Item .ci-public/vulkan-headers/LICENSE* kit/licenses/vulkan-headers
+      - name: Run timing, motion history, and coordinate tests
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($name in @('display_settings_test', 'presentation_coordinates_test', 'fg_timing_test', 'motion_history_test')) {
+            & "./kit/tests/$name.exe"
+            if ($LASTEXITCODE -ne 0) { throw "$name failed with exit code $LASTEXITCODE" }
+          }
+      - name: Check executable startup without GPU or game files
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = (Resolve-Path kit/bbhost.exe).Path
+          $p = Start-Process -FilePath $exe -ArgumentList @('--headless', '--config', 'missing-ci-config.toml') -WorkingDirectory (Resolve-Path kit).Path -RedirectStandardOutput startup.out -RedirectStandardError startup.err -PassThru
+          if (-not $p.WaitForExit(30000)) { $p.Kill(); throw 'Startup check timed out' }
+          $p.Refresh()
+          $output = (Get-Content startup.out -Raw) + (Get-Content startup.err -Raw)
+          Write-Output $output
+          if ($p.ExitCode -ne 2 -or $output -notmatch 'Windows x86-64' -or $output -notmatch 'usage:|app0|configuration|config') { throw "Unexpected startup result: $($p.ExitCode)" }
+          'Windows CPU tests and no-game startup passed. DLSS/FG GPU execution is not tested on these runners.' >> $env:GITHUB_STEP_SUMMARY
+      - name: Verify every ZIP entry and Windows import, then seal the final package
+        run: python tools/ci/verify_windows_package.py
+      - name: Upload verified downloadable package and matching sources
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: unofficial-windows-test-${{ github.sha }}
+          retention-days: 3
+          if-no-files-found: error
+          path: |
+            downloads/bbhost-dlss-test-windows.zip
+            downloads/bbhost-dlss-test-source.tar.gz
+            downloads/bbhost-dlss-test-dependencies.tar.gz
+            downloads/vulkan-loader-source.tar.gz
+            downloads/vulkan-headers-source.tar.gz
+            downloads/SHA256SUMS
+            downloads/ZIP-CONTENTS.txt
+            downloads/PACKAGE-AUDIT.json
+
+  ngx-compile-check:
+    name: Optional MSVC NGX compile check (no binary upload)
+    if: github.repository == 'Jal3223/bbhost-dlss-test' && github.event.repository.private == false && inputs.check_ngx_bridge
+    runs-on: windows-2022
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Require explicit NVIDIA SDK license acceptance
+        env:
+          SDK_LICENSE_ACCEPTED: ${{ inputs.nvidia_sdk_license_accepted }}
+        run: |
+          if ($env:SDK_LICENSE_ACCEPTED -ne 'true') { throw 'Read NVIDIA/DLSS LICENSE.txt and accept the SDK license before requesting NGX compilation.' }
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Fetch only NVIDIA headers and the required static library
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: NVIDIA/DLSS
+          ref: 374959484e79a640feaba44c93ac8cfb0a03f5b5
+          path: .ci-private/dlss
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /include/
+            /lib/Windows_x86_64/x64/nvsdk_ngx_s.lib
+            /LICENSE.txt
+      - name: Fetch pinned public Vulkan headers
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: KhronosGroup/Vulkan-Headers
+          ref: 8864cdc896bbc2a9b6eb36b3218fc9ef57908d77
+          path: .ci-private/vulkan-headers
+          persist-credentials: false
+      - name: Compile the MSVC bridge and GPU probe without running them
+        run: |
+          cmake -S tools/ngx_bridge -B .ci-private/ngx-build -G 'Visual Studio 17 2022' -A x64 "-DDLSS_SDK_DIR=$PWD/.ci-private/dlss" "-DVULKAN_HEADERS_DIR=$PWD/.ci-private/vulkan-headers"
+          if ($LASTEXITCODE -ne 0) { throw 'NGX configure failed' }
+          cmake --build .ci-private/ngx-build --config Release --parallel 2
+          if ($LASTEXITCODE -ne 0) { throw 'NGX compile failed' }
+          'MSVC bridge/probe compiled. SDK files and linked NGX binaries are not uploaded or cached. GPU execution was not tested.' >> $env:GITHUB_STEP_SUMMARY
+      - name: Remove all NVIDIA inputs and linked outputs from the runner
+        if: always()
+        run: |
+          if (Test-Path .ci-private) { Remove-Item .ci-private -Recurse -Force }
