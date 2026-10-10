@@ -33,3 +33,5 @@ build-linux-portable/
 /symbols/
 # The DLSS SDK and Vulkan headers ngx_bridge builds against (docs/dlaa.md).
 /tools/ngx_bridge/external/
+/dist/
+/.ci-private/
