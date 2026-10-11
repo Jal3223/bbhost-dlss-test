@@ -50,7 +50,7 @@ This is a project policy, not legal advice.
    are optional.
 2. In the private repository, run **Private DLSS complete package (personal use
    only)** with the license box ticked.
-3. Download `bbhost-dlss-complete-<commit>` and extract it into the game folder.
+3. Download `bbhost-dlss-nvidia-experimental-<date>-flocker-<commit>` and extract it into the game folder.
    Double-click `Test-DLSS.bat`.
 
 The private workflow checks out this repository at the public run's commit. It
