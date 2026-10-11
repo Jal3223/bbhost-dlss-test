@@ -15,6 +15,13 @@ inline constexpr const char* DlssModes[] = {
 
 inline constexpr const char* UpscalerBackendNames[] = {"dlss", "fsr3", "fsr4"};
 inline constexpr const char* FgBackendNames[] = {"dlss", "fsr3"};
+inline constexpr const char* ReflexModes[] = {"off", "on", "boost"};
+
+inline int parse_reflex_mode(const std::string& name) {
+    if (name == "off" || name == "0") return 0;
+    if (name == "boost" || name == "2") return 2;
+    return 1;
+}
 
 inline int parse_upscaler_backend(const std::string& name) {
     if (name == "fsr3") return 1;

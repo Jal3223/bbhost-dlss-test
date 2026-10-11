@@ -1,3 +1,4 @@
+#include "host/reflex.h"
 #include "core/config.h"
 #include "core/host_clock.h"
 #include "core/portable.h"
@@ -116,6 +117,7 @@ struct SubmitJob {
     std::uint32_t items = 0;
     std::uint64_t ticket = 0;
     std::uint64_t serial = ~0ull;  // a game submission's Gpu::flushes, published once it went (stream_submitted_serial)
+    std::uint64_t reflex_frame_id = 0;
     std::uint64_t foreign = 0;     // a kForeignSubmit's id, published the same way (host_gpu_wait_submitted)
 };
 std::mutex g_sub_mu;
@@ -156,7 +158,13 @@ void submit_job_now(const SubmitJob& job) {
     VkResult r;
     {
         std::lock_guard<std::mutex> q(g.queue_mu);
+        VkLatencySubmissionPresentIdNV attribution{};
+        const auto id = host::reflex::prepare_submit(g.queue, job.reflex_frame_id, si, attribution);
+        if (job.serial != ~0ull) host::reflex::on_render_submit_begin(id);
+        else host::reflex::on_foreign_submit_begin(job.reflex_frame_id);
         r = vkQueueSubmit(g.queue, 1, &si, job.fence);
+        if (job.serial != ~0ull) host::reflex::on_render_submit_end(id);
+        else host::reflex::on_foreign_submit_end(job.reflex_frame_id);
     }
     if (r != VK_SUCCESS) {
         int none = 0;
@@ -528,7 +536,7 @@ void queue_drain() {
 }
 
 void stream_submit_job(const VkCommandBuffer* cmds, std::uint32_t ncmds, VkSemaphore wait, VkPipelineStageFlags wait_stage, VkSemaphore signal,
-                       VkFence fence, std::uint32_t items, std::uint64_t serial, std::uint64_t foreign_id) {
+                       VkFence fence, std::uint32_t items, std::uint64_t serial, std::uint64_t foreign_id, std::uint64_t reflex_frame_id) {
     SubmitJob job;
     job.ncmds = ncmds;
     for (std::uint32_t k = 0; k < ncmds && k < 2; ++k) job.cmds[k] = cmds[k];
@@ -539,6 +547,7 @@ void stream_submit_job(const VkCommandBuffer* cmds, std::uint32_t ncmds, VkSemap
     job.items = items;
     job.serial = serial;
     job.foreign = foreign_id;
+    job.reflex_frame_id = reflex_frame_id;
     if (g_sub_running) {
         enqueue_submit(job);
     } else {
@@ -2198,6 +2207,12 @@ bool init_locked() {
             host_log("gpu: bindless asked for, but the device lacks descriptor indexing or push descriptors; off");
         }
     }
+    VkPhysicalDevicePresentIdFeaturesKHR reflex_present_id{};
+    const bool reflex_enabled = g_want_present && host::reflex::configure_device(g.phys, dext, f12, reflex_present_id);
+    if (reflex_enabled) {
+        reflex_present_id.pNext = f12.pNext;
+        f12.pNext = &reflex_present_id;
+    }
     VkDeviceCreateInfo dci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
     dci.pNext = &f2;
     dci.queueCreateInfoCount = 1;
@@ -2209,6 +2224,7 @@ bool init_locked() {
             reinterpret_cast<PFN_vkCmdPushDescriptorSetKHR>(vkGetDeviceProcAddr(g.device, "vkCmdPushDescriptorSetKHR"));
         if (!g.cmd_push_descriptor_set) g.has_push_descriptor = false;
     }
+    host::reflex::init(g.instance, g.phys, g.device, reflex_enabled);
     if (g.device) {
         // How much video memory is ours: the driver's budget for the heap now,
         // before anything of ours is in it (the card's memory less what the
@@ -2538,7 +2554,17 @@ bool extract_program(std::uint64_t code_va, std::vector<std::uint32_t>& words, s
 }
 
 void begin_recording_locked() {
+    const auto id = host::reflex::cp_thread_frame_id();
+    // Merged CP jobs may span a new simulation frame. End the previous
+    // recording before adding commands carrying a different immutable ID.
+    static bool changing_frame = false; // under g.mu; submit's end operations may call us
+    if (g.recording && g.recording_reflex_id != id && !changing_frame) {
+        changing_frame = true;
+        submit_locked();
+        changing_frame = false;
+    }
     if (!g.recording) {
+        g.recording_reflex_id = id;
         if (stream_on()) {
             rec().begin(g.cmd_);  // the recorder begins it (kBegin)
         } else {
@@ -4716,6 +4742,7 @@ void submit_locked() {
         es.wait_stage = bind_stage;
         es.fence = cur.fence;
         es.serial = cur.serial;
+        es.reflex_frame_id = g.recording_reflex_id;
         busy_submitted_locked(cur);  // before the recorder can hand it over
         rec().end_submit(es);        // published now: the recorder ends it, bb-submit submits it
         cur.in_flight = true;
@@ -4728,12 +4755,17 @@ void submit_locked() {
         job.fence = cur.fence;
         job.items = g.queued;
         job.serial = cur.serial;
+        job.reflex_frame_id = g.recording_reflex_id;
         busy_submitted_locked(cur);  // before the thread can submit it
         enqueue_submit(job);
         cur.in_flight = true;
     } else {
         busy_submitted_locked(cur);
+        VkLatencySubmissionPresentIdNV attribution{};
+        const auto id = host::reflex::prepare_submit(g.queue, g.recording_reflex_id, si, attribution);
+        host::reflex::on_render_submit_begin(id);
         const VkResult r = vkQueueSubmit(g.queue, 1, &si, cur.fence);
+        host::reflex::on_render_submit_end(id);
         g_stream_submitted.store(cur.serial + 1, std::memory_order_release);
         if (r != VK_SUCCESS) {
             host_log("gpu: submit of %u items failed (%d)%s", g.queued, r,
@@ -4873,14 +4905,14 @@ void host_gpu_queue_lock() {
 void host_gpu_queue_unlock() { g.queue_mu.unlock(); }
 void host_gpu_queue_lock_only() { g.queue_mu.lock(); }
 
-std::uint64_t host_gpu_submit_presenter(void* cmd, void* wait, std::uint32_t wait_stage, void* signal, void* fence) {
+std::uint64_t host_gpu_submit_presenter(void* cmd, void* wait, std::uint32_t wait_stage, void* signal, void* fence, std::uint64_t reflex_frame_id) {
     if (!g_sub_running) return 0;
     if (stream_on()) {
         // Into the stream behind the frame's kEndSubmit: a job given straight
         // to bb-submit could pass a submission the recorder has not handed
         // over yet. Published with a fence (R2): this thread recorded it.
         return kForeignTicket | rec().foreign_submit(static_cast<VkCommandBuffer>(cmd), static_cast<VkSemaphore>(wait), wait_stage,
-                                                     static_cast<VkSemaphore>(signal), static_cast<VkFence>(fence));
+                                                     static_cast<VkSemaphore>(signal), static_cast<VkFence>(fence), reflex_frame_id);
     }
     SubmitJob job;
     job.cmds[0] = static_cast<VkCommandBuffer>(cmd);
@@ -4889,6 +4921,7 @@ std::uint64_t host_gpu_submit_presenter(void* cmd, void* wait, std::uint32_t wai
     job.wait_stage = wait_stage;
     job.signal = static_cast<VkSemaphore>(signal);
     job.fence = static_cast<VkFence>(fence);
+    job.reflex_frame_id = reflex_frame_id;
     return enqueue_submit(job);
 }
 

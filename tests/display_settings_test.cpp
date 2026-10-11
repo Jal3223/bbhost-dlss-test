@@ -46,6 +46,12 @@ int main() {
     assert(host::parse_fg_backend("other") == 0);
     assert(std::string(host::fg_backend_name(0)) == "dlss");
     assert(std::string(host::fg_backend_name(1)) == "fsr3");
+    assert(host::parse_reflex_mode("off") == 0);
+    assert(host::parse_reflex_mode("on") == 1);
+    assert(host::parse_reflex_mode("boost") == 2);
+    assert(host::parse_reflex_mode("0") == 0);
+    assert(host::parse_reflex_mode("2") == 2);
+    assert(host::parse_reflex_mode("unknown") == 1);
 
     std::puts("display_settings_test: custom sizes, SR presets, native modes and overrides passed");
 }

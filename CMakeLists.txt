@@ -105,6 +105,7 @@ add_executable(bbhost
   src/hle/np_matching2.cpp
   src/hle/np_signaling.cpp
   src/host/window.cpp
+  src/host/reflex.cpp
   src/host/text_entry.cpp
   src/host/overlay.cpp
   src/host/present_pass.cpp
@@ -261,6 +262,7 @@ endif()
 
 find_package(Vulkan QUIET)
 if(Vulkan_FOUND)
+  target_compile_definitions(bbhost PRIVATE BBHOST_HAVE_VULKAN=1)
   include(cmake/fsr.cmake)
   target_link_libraries(bbhost PRIVATE bbhost_fsr_provider)
   target_compile_definitions(bbhost PRIVATE BBHOST_HAVE_FSR=1)

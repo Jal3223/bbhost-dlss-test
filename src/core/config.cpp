@@ -158,6 +158,7 @@ void apply_values(const std::map<std::string, std::string>& kv, HostConfig* c) {
     str("video.model_detail", &c->model_detail);
     num("video.vblank_hz", &c->vblank_hz);
     str("dlss.mode", &c->dlss_mode);
+    str("dlss.reflex", &c->reflex_mode);
     num("dlss.output_width", &c->dlss_output_width);
     num("dlss.output_height", &c->dlss_output_height);
     str("dlss.upscaler_backend", &c->upscaler_backend);
@@ -997,6 +998,8 @@ bool config_write_template(const std::string& path) {
            "# This generates displayed frames without changing the gameplay rate.\n"
            "frame_generation = false\n"
            "frame_generation_factor = 2\n"
+           "# NVIDIA Reflex: off, on, boost. Unsupported devices retain ordinary pacing.\n"
+           "reflex = \"on\"\n"
            "# Animated mesh vectors for DLSS and frame generation. Restart after changing.\n"
            "object_motion = false\n"
            "\n# Key bindings. The in-game System > Key Bindings screen changes these\n"

@@ -64,6 +64,10 @@ public:
     bool evaluation_finished(unsigned slot) const;
     bool slot_available(unsigned slot) const;
     bool evaluation_times(unsigned slot, std::uint64_t* source_ns, std::uint64_t* ready_ns) const;
+    // Explicit diagnostic readback to an existing directory. Call outside GPU
+    // locks after wait_evaluation, holding the slot lease through this call.
+    // Writes input, real, generated-N and (FSR) HUD RGB/mask PNGs.
+    bool dump_outputs(unsigned slot, const char* directory);
     VkSemaphore ready_semaphore(unsigned slot) const { return frames_[slot].ready; }
     void note_ready_waited(unsigned slot) { frames_[slot].ready_unconsumed = false; }
 

@@ -12,6 +12,7 @@
 #include "host/bindings.h"
 #include "host/dlaa.h"
 #include "host/frame_generation.h"
+#include "host/reflex.h"
 #include "host/options.h"
 #include "host/settings.h"
 #include "host/overlay.h"
@@ -270,6 +271,7 @@ struct Presenter {
     VkQueue present_queue = VK_NULL_HANDLE;  // this thread's own, when the device has one
     std::uint32_t family = 0;
     VkSwapchainKHR swapchain = VK_NULL_HANDLE;
+    std::uint64_t last_reflex_present_id = 0;
     VkFormat format = VK_FORMAT_B8G8R8A8_UNORM;
     VkExtent2D extent{};
     std::vector<VkImage> images;
@@ -511,6 +513,11 @@ bool vk_create_swapchain() {
     sci.presentMode = choose_present_mode(vsync, why);
     sci.clipped = VK_TRUE;
     sci.oldSwapchain = old;
+    VkSwapchainLatencyCreateInfoNV latency{VK_STRUCTURE_TYPE_SWAPCHAIN_LATENCY_CREATE_INFO_NV};
+    if (host::reflex::is_supported()) {
+        latency.latencyModeEnable = VK_TRUE;
+        sci.pNext = &latency;
+    }
     // Windows' graphics modules before and after: a driver that presents
     // through DXGI (a D3D12 queue of its own copying our images into a DXGI
     // swapchain) loads d3d12.dll inside vkCreateSwapchainKHR, as happened in
@@ -523,9 +530,12 @@ bool vk_create_swapchain() {
     [[maybe_unused]] const std::string modules_after = host_graphics_modules();
     g_vk.mode = sci.presentMode;
     if (old) {
+        host::reflex::on_swapchain_destroying(old);
         vkDestroySwapchainKHR(g_vk.device, old, nullptr);
         host_log("present: swapchain %ux%u", g_vk.extent.width, g_vk.extent.height);
     }
+    host::reflex::on_swapchain_created(g_vk.swapchain);
+    g_vk.last_reflex_present_id = 0;
     {
         // Which way the frames go to the screen, each time it is made.
         const auto mode_name = [](VkPresentModeKHR m) -> const char* {
@@ -615,6 +625,7 @@ bool vk_start() {
     g_vk.device = static_cast<VkDevice>(h.device);
     g_vk.queue = static_cast<VkQueue>(h.queue);
     g_vk.present_queue = static_cast<VkQueue>(h.present_queue);
+    if (g_vk.present_queue) host::reflex::on_present_queue_created(g_vk.present_queue);
     g_vk.family = h.family;
     g_vk.latest_ready = h.fifo_latest_ready;
     if (!SDL_Vulkan_CreateSurface(g_window, g_vk.instance, nullptr, &g_vk.surface)) {
@@ -711,6 +722,8 @@ PresentStats g_pstats;
 
 struct PresentSourceImage {
     VkImage image = VK_NULL_HANDLE;
+    std::uint64_t reflex_frame_id = 0;
+    bool synthetic = false;
     VkFormat format = VK_FORMAT_UNDEFINED;
     std::uint32_t width = 0, height = 0;
     std::uint64_t display_va = 0;
@@ -723,6 +736,7 @@ bool present_swapchain_image(const PresentSourceImage& source, int buffer_index,
                              unsigned display_w, unsigned display_h,
                              const PresentFlip& flip, bool submit_renderer_work) {
     const auto t_enter = std::chrono::steady_clock::now();
+    const std::uint64_t reflex_id = source.reflex_frame_id ? source.reflex_frame_id : flip.reflex_frame_id;
     const std::uint64_t cpu_enter = host_thread_cpu_ns();
     const auto us = [](std::chrono::steady_clock::time_point a, std::chrono::steady_clock::time_point b) {
         return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(b - a).count());
@@ -754,7 +768,11 @@ bool present_swapchain_image(const PresentSourceImage& source, int buffer_index,
     // waiting on its flips (two runs frozen 20 s into the title, "acquiring an
     // image (43.4 s)"). Past 100 ms this frame is not presented; the game goes
     // on and the next frame tries again.
-    VkResult r = vkAcquireNextImageKHR(g_vk.device, g_vk.swapchain, 100000000ull, acquire_sem, acquire_fence, &idx);
+    const auto acquire = [&](std::uint64_t timeout) {
+        std::lock_guard<std::mutex> access(host::reflex::swapchain_api_mutex());
+        return vkAcquireNextImageKHR(g_vk.device, g_vk.swapchain, timeout, acquire_sem, acquire_fence, &idx);
+    };
+    VkResult r = acquire(100000000ull);
     if (r == VK_TIMEOUT || r == VK_NOT_READY) {
         static std::atomic<int> said{0};
         if (said.fetch_add(1) < 4) host_log("present: no swapchain image within 100 ms (the window is not being shown?); frame not presented");
@@ -780,7 +798,7 @@ bool present_swapchain_image(const PresentSourceImage& source, int buffer_index,
             return false;
         }
         if (by_fence) vkResetFences(g_vk.device, 1, &g_vk.acquire_fence);
-        r = vkAcquireNextImageKHR(g_vk.device, g_vk.swapchain, UINT64_MAX, acquire_sem, acquire_fence, &idx);
+        r = acquire(UINT64_MAX);
         if (r == VK_SUBOPTIMAL_KHR) r = VK_SUCCESS;  // ours all the same: not presenting it would keep it for ever
     }
     if (r != VK_SUCCESS) {
@@ -1081,7 +1099,7 @@ bool present_swapchain_image(const PresentSourceImage& source, int buffer_index,
     // memory visibility from NGX on the renderer queue to this queue.
     const std::uint64_t ticket = source.generated_output ? 0 :
         host_gpu_submit_presenter(g_vk.cmd, source.ready ? source.ready : (by_fence ? nullptr : acquire_sem),
-            source.ready ? VK_PIPELINE_STAGE_ALL_COMMANDS_BIT : wait_stage, rendered, g_vk.fence);
+            source.ready ? VK_PIPELINE_STAGE_ALL_COMMANDS_BIT : wait_stage, rendered, g_vk.fence, reflex_id);
     if (independent) {
         if (locked) {
             host_gpu_unlock();
@@ -1094,7 +1112,11 @@ bool present_swapchain_image(const PresentSourceImage& source, int buffer_index,
         host_gpu_wait_submitted(ticket);
     } else {
         host_gpu_queue_lock();
+        VkLatencySubmissionPresentIdNV attribution{};
+        host::reflex::prepare_submit(g_vk.queue, reflex_id, si, attribution);
+        host::reflex::on_foreign_submit_begin(reflex_id);
         vkQueueSubmit(g_vk.queue, 1, &si, g_vk.fence);
+        host::reflex::on_foreign_submit_end(reflex_id);
         host_gpu_queue_unlock();
         host_gpu_unlock();
         locked = false;
@@ -1139,12 +1161,37 @@ bool present_swapchain_image(const PresentSourceImage& source, int buffer_index,
     pi.swapchainCount = 1;
     pi.pSwapchains = &g_vk.swapchain;
     pi.pImageIndices = &idx;
+    // Synthetic presents share a real frame's identity for out-of-band
+    // markers. Only the real frame carries a swapchain present ID; repeated
+    // flips of the same source must not reuse that strictly increasing ID.
+    const bool track_real = !source.synthetic && reflex_id > g_vk.last_reflex_present_id;
+    VkPresentIdKHR present_id{VK_STRUCTURE_TYPE_PRESENT_ID_KHR};
+    if (track_real && host::reflex::is_supported()) {
+        present_id.swapchainCount = 1;
+        present_id.pPresentIds = &reflex_id;
+        pi.pNext = &present_id;
+        g_vk.last_reflex_present_id = reflex_id;
+    }
     present_step("presenting");
-    const VkResult pr = vkQueuePresentKHR(g_vk.present_queue ? g_vk.present_queue : g_vk.queue, &pi);
+    if (source.synthetic || track_real) host::reflex::on_present_begin(reflex_id, track_real);
+    VkResult pr;
+    {
+        std::lock_guard<std::mutex> access(host::reflex::swapchain_api_mutex());
+        pr = vkQueuePresentKHR(g_vk.present_queue ? g_vk.present_queue : g_vk.queue, &pi);
+    }
+    if (source.synthetic || track_real) host::reflex::on_present_end(reflex_id, track_real);
     if (queue_held) host_gpu_queue_unlock();
     if (locked) {
         host_gpu_unlock();
         locked = false;
+    }
+    static const bool trace_reflex = [] {
+        const char* e = std::getenv("BBHOST_REFLEX_TIMING");
+        return e && e[0] == '1';
+    }();
+    if (track_real && trace_reflex) {
+        host::reflex::LatencyReport report;
+        host::reflex::query_latency_timings(&report);
     }
     // The next frame rebuilds first when the present says the swapchain no
     // longer fits: out of date always, suboptimal only on a new size.
@@ -1249,6 +1296,9 @@ void vk_present_generated(int buffer_index, std::uint64_t display_va, const Pres
     static host::FgSchedule schedule([] {
         const char* e = std::getenv("BBHOST_FG_SMOOTH");
         return !e || e[0] != '0';
+    }(), [] {
+        const char* e = std::getenv("BBHOST_FG_LOW_LATENCY");
+        return !(e && e[0] == '0');
     }());
     schedule.observe(source, ready, guides.render_frame_index, now_ns(),
                      guides.frame_ms, host_startup_settings().frame_cap);
@@ -1258,6 +1308,7 @@ void vk_present_generated(int buffer_index, std::uint64_t display_va, const Pres
     PresentSourceImage image;
     image.format = fg.generated_format(); image.width = fg.width(); image.height = fg.height();
     image.generated_output = true;
+    image.reflex_frame_id = guides.reflex_frame_id;
     image.ready = fg.ready_semaphore(slot);
     unsigned shown = 0, skipped = 0;
     static const bool late_pace = [] {
@@ -1274,6 +1325,7 @@ void vk_present_generated(int buffer_index, std::uint64_t display_va, const Pres
         if (!suppressed && !late_pace)
             host_sleep_until(std::chrono::steady_clock::time_point(std::chrono::nanoseconds(deadline - cost)));
         const bool real = position == factor;
+        image.synthetic = !real;
         image.image = real ? fg.real_image(slot) : fg.generated_image(position - 1, slot);
         image.display_va = real ? display_va : 0;
         if (present_swapchain_image(image, buffer_index, image.width, image.height, flip, false)) {
@@ -1291,6 +1343,17 @@ void vk_present_generated(int buffer_index, std::uint64_t display_va, const Pres
     if (retired != VK_SUCCESS) {
         host_log("framegen: compositor retirement failed (%d)", static_cast<int>(retired));
         g_vk.ok = false;
+    }
+    // Explicit diagnostic readback only: exclude this frame from performance
+    // measurements. Keep the output lease until every copied image is retired.
+    static bool captured = false;
+    if (const char* directory = std::getenv("BBHOST_FG_CAPTURE_DIR"); directory && *directory && !captured) {
+        const char* frame = std::getenv("BBHOST_FG_CAPTURE_FRAME");
+        const auto target = frame ? std::strtoull(frame, nullptr, 10) : 1500ull;
+        if (guides.render_frame_index >= target && retired == VK_SUCCESS) {
+            captured = true;
+            fg.dump_outputs(slot, directory);
+        }
     }
     static const bool trace = [] { const char* e = std::getenv("BBHOST_FG_TIMING"); return e && e[0] == '1'; }();
     if (trace) host_log("fg-pipeline: render=%llu GPU_source_ns=%llu GPU_ready_ns=%llu period_ms=%.3f shown=%u expired=%u suppressed=%d present_block_ms=%.3f",
@@ -1367,6 +1430,8 @@ void vk_present(int buffer_index, std::uint64_t display_va, unsigned display_w, 
             if (!suppressed) {
                 // Display generated frame first
                 PresentSourceImage gen_src;
+                gen_src.reflex_frame_id = guides.reflex_frame_id;
+                gen_src.synthetic = true;
                 gen_src.image = host::fg_get().generated_image();
                 gen_src.format = host::fg_get().generated_format();
                 gen_src.width = host::fg_get().width();
@@ -1390,6 +1455,7 @@ void vk_present(int buffer_index, std::uint64_t display_va, unsigned display_w, 
 
                 // Followed by owned OutputReal
                 PresentSourceImage real_src;
+                real_src.reflex_frame_id = guides.reflex_frame_id;
                 real_src.image = host::fg_get().real_image();
                 real_src.format = host::fg_get().generated_format();
                 real_src.width = host::fg_get().width();
@@ -1416,6 +1482,7 @@ void vk_present(int buffer_index, std::uint64_t display_va, unsigned display_w, 
                 host::fg_note_interpolation_disabled();
                 // Interpolation suppressed: display only the real frame
                 PresentSourceImage real_src;
+                real_src.reflex_frame_id = guides.reflex_frame_id;
                 real_src.image = host::fg_get().real_image();
                 real_src.format = host::fg_get().generated_format();
                 real_src.width = host::fg_get().width();
@@ -2594,6 +2661,7 @@ void host_window_stop() {
     if (g_vk.ok) {
         std::lock_guard<std::mutex> lock(g_vk.mu);
         g_vk.ok = false;
+        host::reflex::on_swapchain_destroying(g_vk.swapchain);
         host::fg_get().shutdown();
         host_gpu_lock();
         host_gpu_queue_lock();
@@ -2730,6 +2798,8 @@ void host_present(int buffer_index, std::uint64_t display_va, unsigned display_w
 #if defined(BBHOST_HAVE_SDL3)
     if (g_active) {
         PresentFlip captured_flip = flip;
+        if (!captured_flip.reflex_frame_id)
+            captured_flip.reflex_frame_id = host::reflex::cp_thread_frame_id();
         if (!captured_flip.temporal_frame && display_va) {
             host_gpu_lock();
             captured_flip.temporal_frame = gpu::dlaa_fg_frame_id_locked(display_va);

@@ -24,7 +24,8 @@ private:
 // fence completion; later observations can include display/driver waiting.
 class FgSchedule {
 public:
-    explicit FgSchedule(bool smooth = true) : smooth_(smooth) {}
+    explicit FgSchedule(bool smooth = true, bool low_latency = false)
+        : smooth_(smooth), low_latency_(low_latency) {}
     void observe(std::uint64_t source, std::uint64_t ready, std::uint64_t render,
                  std::int64_t host_ready, float fallback_ms, int game_cap) {
         minimum_ = game_cap > 0 ? 1000000000ll / game_cap : 8000000ll;
@@ -53,6 +54,12 @@ public:
             const auto target = offset_ + static_cast<std::int64_t>(source) + evaluation_;
             if (smooth_ && continuous && cadence_valid_) {
                 const auto predicted = source_host_ + period_ * static_cast<std::int64_t>(frames);
+                // A first subframe scheduled before a late GPU completion
+                // shortens its generated->real interval. Retain a bounded,
+                // slowly decaying launch budget for those observed late anchors
+                // instead of imposing the lowest possible delay under all loads.
+                launch_variation_ = std::max(std::max<std::int64_t>(0, target - predicted),
+                                            launch_variation_ - launch_variation_ / 200);
                 // Follow sustained load changes while rejecting individual
                 // source/evaluation spikes. Presentation remains bounded by
                 // the three owned frame sets; expired subframes are skipped.
@@ -64,17 +71,26 @@ public:
                 // source period of the current GPU anchor.
                 source_host_ = std::clamp(source_host_, target - this->period() / 2,
                                                        target + this->period() / 2);
-            } else source_host_ = target;
+            } else { source_host_ = target; launch_variation_ = 0; }
         } else {
             source_host_ = host_ready;
             evaluation_ = 0;
             cadence_valid_ = false;
+            launch_variation_ = 0;
         }
         last_source_ = source; last_render_ = render;
     }
     std::int64_t deadline(unsigned position, unsigned factor) const {
         factor = std::clamp(factor, 2u, 4u);
-        return source_host_ + period() * std::min(position, factor) / factor;
+        const auto step = std::min(position, factor);
+        // The midpoint is already available at the GPU-ready anchor. A small
+        // compositor budget leaves room to prepare it without holding every
+        // real endpoint for an additional generated-frame interval.
+        if (low_latency_) {
+            const auto lead = std::min(2000000 + launch_variation_, std::max<std::int64_t>(2000000, period() / factor));
+            return source_host_ + lead + period() * (step ? step - 1 : 0) / factor;
+        }
+        return source_host_ + period() * step / factor;
     }
     // Apply the simulation floor to output spacing, not individual samples:
     // clamping samples first turns zero-mean completion jitter into a slower
@@ -90,7 +106,8 @@ private:
     std::uint64_t last_source_ = 0, last_render_ = 0;
     std::int64_t period_ = 16666667, minimum_ = 16666667;
     std::int64_t source_host_ = 0, evaluation_ = 0, offset_ = 0;
-    bool clock_valid_ = false, cadence_valid_ = false, smooth_ = true;
+    std::int64_t launch_variation_ = 0;
+    bool clock_valid_ = false, cadence_valid_ = false, smooth_ = true, low_latency_ = false;
 };
 
 // Budget the generated->real spacing from evaluation *start*. GPU waiting and

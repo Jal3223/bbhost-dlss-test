@@ -175,10 +175,14 @@ It improved over the earlier run but still varied from 4.95 ms at p10 to
 13.05 ms at p90, skipping many generated positions against the driver limit.
 This does not justify promoting it to the normal menu.
 
-Reflex is not integrated. NVIDIA's
+Native Vulkan [Reflex](reflex.md) is now integrated, with Off/On/On + Boost
+settings and driver timestamp diagnostics. See [the current validation](reflex-validation.md)
+for paced 30–60 FPS source tests, GPU-bound latency comparisons and MFG limits.
+NVIDIA's
 [Streamline DLSS-G guide](https://github.com/NVIDIA-RTX/Streamline/blob/main/docs/ProgrammingGuideDLSS_G.md)
 requires Reflex for that integration; native NGX does not supply Streamline's
-presentation pacer or Reflex automatically.
+presentation pacer or Reflex automatically. bbhost therefore implements its
+own driver sleep, frame attribution and bounded presentation scheduling.
 
 ### Validation limitations
 
