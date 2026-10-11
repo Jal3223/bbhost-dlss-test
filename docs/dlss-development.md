@@ -186,12 +186,19 @@ own driver sleep, frame attribution and bounded presentation scheduling.
 
 ### Validation limitations
 
-Synchronization validation reports NVIDIA runtime clear/copy/layout hazards,
-also reproduced in the standalone fixture without bbhost's renderer, plus
-existing renderer warnings. Matching NVIDIA Vulkan DLSS-G hazards are tracked
-in [Streamline issue #84](https://github.com/NVIDIA-RTX/Streamline/issues/84).
-They are recorded, not suppressed; clean synchronization validation is not
-claimed. Broader hardware, window-mode and long-session testing remain necessary.
+The unmodified NGX 310.9.1 dispatch reproduces private clear/copy/layout
+synchronization hazards in the standalone fixture. The bridge now supplies
+NGX's documented Vulkan function callbacks to extend the runtime's image
+dependencies with transfer stages/accesses and order overlapping buffer fills.
+The repair is restricted to the FG evaluation thread and command buffer; SR
+and calls outside evaluation keep their original dependencies. No vendor
+binary or validation message is modified. The paired standalone probe reports
+20 hazards with `BBHOST_NGX_TRANSFER_SYNC=0` and zero with the default repair;
+SR, distinct 2x/3x/4x temporal images, reset/history and real endpoints pass.
+Existing game-renderer warnings remain; a clean standalone fixture does not
+establish warning-free gameplay. Related vendor hazards are tracked in
+[Streamline issue #84](https://github.com/NVIDIA-RTX/Streamline/issues/84).
+Broader hardware, window-mode and long-session testing remain necessary.
 The uncapped 4x-at-30 synchronization-validation pair with the renderer mutex
 restored/omitted reports the same five diagnostic IDs in complete layer-log
 captures, including the runtime's clear-after-layout-transition write hazard
@@ -199,6 +206,8 @@ on `nv.ngx.dlssg.resource`. No new diagnostic ID appears in that comparison;
 this is not a clean validation pass.
 An oversized stress test exhausted the game's direct-memory allocation and
 produced no generated presentations; it is excluded from FG results.
+That earlier comparison predates the transfer-dependency repair. Current
+evidence is in [Reflex and pacing validation](reflex-validation.md).
 This is not a Reflex/latency certification.
 
 ## Building and diagnostics
@@ -208,6 +217,9 @@ Clang/mingw-w64. Supply NVIDIA's DLSS SDK and Vulkan headers separately;
 SDK/runtime binaries and game files are not included in the source.
 `ngx_probe.exe` checks capabilities; `ngx_probe.exe gpu` checks reconstruction,
 interpolation and GPU readback.
+`ctest --test-dir build/ngx_bridge -C Release` checks the bridge's transfer
+dispatch contract without a GPU or NVIDIA runtime. GPU synchronization checks
+require the validation layer with synchronization validation explicitly enabled.
 
 Capture PresentMon CSVs with display tracking, then run
 `python tools/win/analyze_presentmon.py capture.csv --after-ms 60000 --refresh-hz 120`.

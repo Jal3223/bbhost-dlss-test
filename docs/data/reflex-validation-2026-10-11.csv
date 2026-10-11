@@ -19,3 +19,7 @@ reflex-final-guard-off-b,48.87,97.13,97.131,0,68,24,1,0,2.245,2.795,7.933,10.57,
 reflex-final-guard-on-b,48.398,97.007,97.01,0,102,36,1,0,2.204,2.662,7.897,10.571,11.913,15.164,45.064,49.687,54.09,46.557,52.763,54.526,0,Hardware Composed: Independent Flip
 reflex-final-heavy-3x,35.535,105.376,105.368,0,118,74,18,0,4.087,4.733,6.978,9.268,11.659,15.887,62.446,68.26,87.763,62.634,69.513,72.628,0,Hardware Composed: Independent Flip
 reflex-final-heavy-4x,30.005,119.961,119.96,0,58,37,1,0,5.591,6.001,7.238,8.278,9.533,12.144,66.618,70.111,71.574,67.973,71.701,74.694,0,Hardware Composed: Independent Flip
+ngx-transfer-off-a,37.199,74.228,74.228,0,14,9,1,0,2.58,3.009,11.949,13.348,15.049,17.454,,,,,,,0,Hardware Composed: Independent Flip
+ngx-transfer-on-a,36.945,73.775,73.775,0,1,2,0,0,2.602,3.048,12.06,13.445,15.192,17.612,,,,,,,0,Hardware Composed: Independent Flip
+ngx-transfer-off-b,37.243,74.476,74.476,0,11,9,1,0,2.593,3.028,12.049,13.374,14.754,17.014,,,,,,,0,Hardware Composed: Independent Flip
+ngx-transfer-on-b,36.934,73.828,73.829,0,3,4,0,0,2.605,3.031,12.02,13.472,15.112,17.586,,,,,,,0,Hardware Composed: Independent Flip

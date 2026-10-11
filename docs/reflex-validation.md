@@ -147,15 +147,50 @@ The captured poses differ slightly; this is an observational check rather than
 a matched-pixel quality score. Readback stalls and those runs are excluded from
 the performance CSV and tables.
 
-## Synchronization limits
+## NGX transfer-dependency repair
 
-NGX runtime 310.9.1 emits internal `nv.ngx.dlssg.resource` synchronization
-diagnostics. The first transition/clear hazard occurs inside the vendor's
-evaluation, despite host barriers before and after that call. The standalone
-NGX GPU probe reproduces it without the game renderer. A host barrier cannot
-repair ordering between private SDK operations inside the call. The diagnostics
-remain visible; this is **not** a clean NGX synchronization-validation pass.
-The related vendor report is [NVIDIA Streamline issue 84](https://github.com/NVIDIA-RTX/Streamline/issues/84).
+The unmodified NGX 310.9.1 dispatch reports private image-transition/clear/copy
+hazards and overlapping buffer fills inside its evaluation call. Barriers
+before or after the call cannot order those internal operations. A separate
+prototype established that NGX records them through the documented Vulkan
+function-table callbacks supplied at initialization.
+
+The bridge now extends the runtime's image barriers with transfer stages and
+access masks, preserving layouts, ranges, queue ownership, pNext chains and
+existing dependencies. A transfer-to-transfer buffer barrier orders fills over
+the actual destination range. Thread-local command-buffer scope restricts the
+repair to FG evaluation. There are no additional all-commands image barriers,
+no vendor DLL modifications and no validation filtering. SR and other commands
+keep their original dependencies. `BBHOST_NGX_TRANSFER_SYNC=0` restores the
+unmodified dispatch for diagnosis.
+
+With the same forced validation DLL/manifest and synchronization checking
+explicitly enabled, the standalone GPU probe reports 20 hazards with the repair
+disabled (ten write-after-write and ten read-after-write before the message
+limit) and zero with it enabled. Both runs pass reconstruction, distinct
+2x/3x/4x generated images, reset/history recovery and preservation of real
+endpoints. Zero hazards in this fixture is not proof of wholly warning-free
+gameplay or every GPU/runtime combination. The related vendor report is
+[NVIDIA Streamline issue 84](https://github.com/NVIDIA-RTX/Streamline/issues/84).
+
+Two alternating gameplay pairs isolate the repair on the eleven-megapixel,
+GPU-bound native-DLAA/2x workload, cap 60, object motion and Reflex On. The same
+executable, save, driver profile and stationary camera are used in all four
+runs; only the bridge override changes. Timing windows follow the method above.
+
+| Repair | Real FPS | Display changes/s | p99 display interval | Mean FG evaluation |
+| --- | ---: | ---: | ---: | ---: |
+| Off / A | 37.20 | 74.23 | 17.45 ms | 2.580 ms |
+| On / A | 36.95 | 73.78 | 17.61 ms | 2.602 ms |
+| Off / B | 37.24 | 74.48 | 17.01 ms | 2.593 ms |
+| On / B | 36.93 | 73.83 | 17.59 ms | 2.605 ms |
+
+Both repaired runs cost approximately 0.7–0.8% real FPS in this workload;
+evaluation increases by 0.012–0.022 ms. No missing display rows or sampled reset
+suppression occur. Sampled expired positions are 1/0/1/0 in table order. These
+runs compare synchronization repair, not Reflex modes, and do not collect
+per-frame driver latency reports. The earlier Reflex/source-rate tables above
+precede this bridge repair; the new comparison is retained in the aggregate CSV.
 
 FSR's standalone fast-pan fixture is synchronization-clean. Existing gameplay
 renderer diagnostics remain visible and are compared against a paired run.
@@ -168,20 +203,16 @@ which permits concurrent swapchain use except destruction. A clean GPU hazard
 check must not be described as a wholly warning-free validation run.
 The repeated DLSS 2x run with the WSI guard has no sleep/query threading
 conflicts and no `SYNC-HAZARD` reports. Eleven marker-overlap reports remain;
-they are retained rather than filtered. The standalone NGX probe still reports
-at least ten write-after-write and ten read-after-write hazards before the
-validation layer's repeated-message limit. Examples are private image
-transitions followed by clears/copies without the corresponding transfer
-access masks, and repeated private buffer fills. These operations are between
-entry and return of the vendor evaluation call; none of their reported resource
-handles belongs to a host input/output allocation. The probe's reconstruction,
-distinct temporal positions, reset/history and real-endpoint checks pass
-despite the diagnostics. Passing those checks does not establish that the
-missing synchronization is harmless on every driver.
+they are retained rather than filtered. Earlier standalone NGX results without
+the repair reproduced the private
+hazards described above. Passing temporal pixel checks alone did not establish
+that their missing synchronization was harmless on every driver.
 
 ## Build and menu checks
 
-All eight locally registered checks pass, including the FSR GPU fixture. The
+All registered local renderer checks pass, including the FSR GPU fixture and
+the new transfer-dispatch contract test. The contract test also passes in the
+separate MSVC bridge build and needs no GPU or NVIDIA binaries. The FSR
 fixture also passes with the validation DLL/manifest explicitly selected at
 16/32/64-pixel camera speeds. Hosted fixture skips are not treated as GPU proof.
 

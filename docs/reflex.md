@@ -57,6 +57,9 @@ Diagnostic overrides:
   GPU work retires. `BBHOST_FG_CAPTURE_FRAME` selects its render serial. Create
   the directory first and exclude readback from timing measurements. Captures
   include the HUD-free input, real endpoint, generated images and FSR HUD mask.
+- `BBHOST_NGX_TRANSFER_SYNC=0` disables the NGX FG transfer-dependency repair
+  for diagnosis. Leave it unset for normal use. This switch affects the bridge,
+  not Reflex or FSR; it takes effect at NGX initialization.
 
 The implementation follows the Vulkan [sleep](https://docs.vulkan.org/refpages/latest/refpages/source/vkLatencySleepNV.html),
 [marker concurrency](https://docs.vulkan.org/refpages/latest/refpages/source/vkSetLatencyMarkerNV.html)
