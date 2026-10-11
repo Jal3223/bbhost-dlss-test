@@ -34,6 +34,23 @@ int main() {
     schedule.observe(100000000, 104000000, 1, start, 16.7f, 60);
     schedule.observe(125000000, 129000000, 2, start + 25000000, 16.7f, 60);
     assert(schedule.period() == 25000000);
+
+    host::FgSchedule early(true, true);
+    early.observe(100000000, 104000000, 1, start, 25.0f, 60);
+    assert(early.deadline(1, 2) == start + 2000000);
+    assert(early.deadline(2, 2) == start + 14500000);
+    assert(early.deadline(4, 4) == start + 20750000);
+    host::FgSchedule variable(true, true);
+    for (unsigned i = 1; i <= 100; ++i) {
+        const auto stamp = 1000000000ull + i * 20000000ull + (i % 2 ? 7000000 : 0);
+        const auto completed = stamp + 2000000;
+        variable.observe(stamp, completed, i, completed + 100000000, 20.0f, 60);
+        if (i > 50) {
+            assert(variable.deadline(1, 2) >= static_cast<std::int64_t>(completed + 100000000));
+            assert(variable.deadline(2, 2) - variable.deadline(1, 2) == variable.period() / 2);
+        }
+    }
+    assert(early.next_position(1, 2, early.deadline(2, 2)) == 2);
     assert(schedule.deadline(4, 4) - schedule.deadline(3, 4) == 6250000);
     // A driver wait past two subframe deadlines skips them instead of bursting.
     assert(schedule.next_position(1, 4, schedule.deadline(3, 4)) == 3);

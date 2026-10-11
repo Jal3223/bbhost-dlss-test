@@ -55,6 +55,7 @@ struct HostConfig {
     bool dlss_frame_generation = false;
     int dlss_fg_factor = 2;
     bool dlss_object_motion = false; // animated mesh vectors; optional extra GPU work
+    std::string reflex_mode = "on"; // NVIDIA native Vulkan low latency: off, on, boost
     bool skip_intro = false;   // startup.skip_intro / BBHOST_SKIP_INTRO=0|1: the three company logos only
     // loading.quick_reentry / BBHOST_QUICK_REENTRY=0|1: a load after a death or
     // lamp travel ends when the area is ready, not after the game's 12-second

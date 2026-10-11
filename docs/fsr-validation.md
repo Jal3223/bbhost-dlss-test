@@ -1,4 +1,4 @@
-# FSR validation — 2026-10-10
+# FSR validation â€” 2026-10-10
 
 Independent bbhost host adapters use the pinned MIT-licensed FSR-Vulkan
 provider at `c64f093404125e960813f95f1996c14780f0dd69`. The reference is
@@ -8,11 +8,13 @@ FSR 4 model approach. No emulator integration code is included.
 ## Pixel and resource checks
 
 The registered `fsr_provider_check` fixture runs FSR 3 reconstruction and
-2x generation on a moving rectangle. RGB centroid checks require the
-generated content to lie between both real endpoints, within six output
-pixels of the expected midpoint, with bounded background error. On the
-RTX 5080, centroids are 485.50 / 491.65 / 509.50 pixels (previous / generated /
-current), with zero measured background error. All readback values are finite.
+2x generation on textured foreground and background planes with perspective
+depth and camera motion. The generated centroid must lie within two output
+pixels of the analytic midpoint; silhouette IoU, foreground area and background
+error have separate bounds. The 2026-10-11 repeats at 16, 32 and 64 render pixels
+of motion per frame pass, including synchronization validation. All readback
+values are finite. [Updated fixture and gameplay investigation](reflex-validation.md#fsr-pixel-investigation)
+record the bounds and measured errors.
 The resize cycle also passes, with imported views and descriptor pools
 retired only after their GPU submission completes.
 
@@ -38,9 +40,9 @@ errors found during development do not recur after correction.
 RTX 5080, driver 617.14, PresentMon 2.6.0, otherwise idle GPU and no driver FPS
 limit. Copied saves in the Hunter's Dream and Central Yharnam; animated-object
 motion is enabled. Each run lasts 110 seconds, with camera sweeps; the measured
-window is 70–109 seconds, excluding startup, screenshots and shutdown.
+window is 70â€“109 seconds, excluding startup, screenshots and shutdown.
 Foreground status is checked throughout. Reconstruction requests about
-7 megapixels; the presentation surface is 1920×1080 on a 119.88 Hz display.
+7 megapixels; the presentation surface is 1920Ã—1080 on a 119.88 Hz display.
 The tested per-application NVIDIA present method is layered on DXGI swapchain.
 
 FSR 3 Quality off/on is repeated in two alternating rounds. The generated

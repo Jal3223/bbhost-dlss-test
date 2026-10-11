@@ -8,6 +8,8 @@
 #include <mutex>
 #include <cstring>
 #include <limits>
+#include <cstdlib>
+#include <vector>
 
 #include "nvsdk_ngx_helpers_vk.h"
 #include "nvsdk_ngx_helpers.h"
@@ -69,6 +71,8 @@ NVSDK_NGX_Resource_VK resource(const NgxbImage& im, bool rw) {
     return NVSDK_NGX_Create_ImageView_Resource_VK(im.view, im.image, range, im.format, im.width, im.height, rw);
 }
 
+#include "ngx_transfer_sync.h"
+
 }  // namespace
 
 extern "C" {
@@ -119,8 +123,17 @@ uint32_t ngxb_init(VkInstance instance, VkPhysicalDevice physical, VkDevice devi
     info.PathListInfo.Length = 1;
     info.LoggingInfo.LoggingCallback = &ngx_log;
     info.LoggingInfo.MinimumLoggingLevel = NVSDK_NGX_LOGGING_LEVEL_ON;
+    g_transfer_sync.gipa = gipa;
+    g_transfer_sync.gdpa = gdpa;
+    g_transfer_sync.device = device;
+    g_transfer_sync.barrier = reinterpret_cast<PFN_vkCmdPipelineBarrier>(gdpa(device, "vkCmdPipelineBarrier"));
+    g_transfer_sync.fill = reinterpret_cast<PFN_vkCmdFillBuffer>(gdpa(device, "vkCmdFillBuffer"));
+    const char* sync_override = std::getenv("BBHOST_NGX_TRANSFER_SYNC");
+    g_transfer_sync.enabled = g_transfer_sync.barrier && g_transfer_sync.fill &&
+        !(sync_override && !std::strcmp(sync_override, "0"));
+    logf("NGX FG transfer dependencies: %s", g_transfer_sync.enabled ? "enabled" : "disabled");
     NVSDK_NGX_Result r = NVSDK_NGX_VULKAN_Init_with_ProjectID(kProjectId, NVSDK_NGX_ENGINE_TYPE_CUSTOM, "1.0", data_dir, instance,
-                                                              physical, device, gipa, gdpa, &info);
+                                                              physical, device, transfer_gipa, transfer_gdpa, &info);
     if (NVSDK_NGX_FAILED(r)) {
         logf("NGX init failed: 0x%08X", static_cast<unsigned>(r));
         return static_cast<uint32_t>(r);
@@ -240,6 +253,8 @@ void ngxb_shutdown(void) {
     g_params = nullptr;
     if (g_device) NVSDK_NGX_VULKAN_Shutdown1(g_device);
     g_device = VK_NULL_HANDLE;
+    g_transfer_sync = {};
+    g_transfer_cmd = VK_NULL_HANDLE;
 }
 
 int32_t ngxb_fg_available(void) { return g_device && g_fg_available; }
@@ -316,6 +331,7 @@ uint32_t ngxb_fg_evaluate_index(VkCommandBuffer cmd, const NgxbGenerate* f,
     p.multiFrameCount = count;
     p.multiFrameIndex = index;
     if (render_frame) NVSDK_NGX_Parameter_SetULL(g_fg_params, NVSDK_NGX_DLSSG_Parameter_BackbufferFrameID, render_frame);
+    TransferScope transfer_scope(cmd);
     return static_cast<uint32_t>(NGX_VK_EVALUATE_DLSSG(cmd, g_fg_feature, g_fg_params, &images, &p));
 }
 

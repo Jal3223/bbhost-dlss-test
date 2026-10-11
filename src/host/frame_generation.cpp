@@ -1,3 +1,4 @@
+#include "host/reflex.h"
 #include "host/frame_generation.h"
 
 #include <atomic>
@@ -7,6 +8,7 @@
 #include <mutex>
 #include <vector>
 #include "core/config.h"
+#include "core/image_file.h"
 #include "log.h"
 #include "host/gpu.h"
 #include "host/settings.h"
@@ -949,11 +951,15 @@ bool FrameGenerator::evaluate_submit(VkImage color_image, VkImageView color_view
     si.pWaitDstStageMask = wait ? &wait_stage : nullptr;
     si.signalSemaphoreCount = 1;
     si.pSignalSemaphores = &frame.ready;
-    frame.ticket = host_gpu_submit_presenter(frame.cmd, wait, wait_stage, frame.ready, frame.fence);
+    frame.ticket = host_gpu_submit_presenter(frame.cmd, wait, wait_stage, frame.ready, frame.fence, guides.reflex_frame_id);
     VkResult res = VK_SUCCESS;
     if (!frame.ticket) {
         host_gpu_queue_lock();
+        VkLatencySubmissionPresentIdNV attribution{};
+        host::reflex::prepare_submit(queue_, guides.reflex_frame_id, si, attribution);
+        host::reflex::on_foreign_submit_begin(guides.reflex_frame_id);
         res = vkQueueSubmit(queue_, 1, &si, frame.fence);
+        host::reflex::on_foreign_submit_end(guides.reflex_frame_id);
         host_gpu_queue_unlock();
     }
     frame.pending = res == VK_SUCCESS;
@@ -987,6 +993,164 @@ bool FrameGenerator::evaluation_times(unsigned slot, std::uint64_t* source_ns, s
     *source_ns = static_cast<std::uint64_t>(values[0] * timestamp_period_ns_);
     *ready_ns = static_cast<std::uint64_t>(values[1] * timestamp_period_ns_);
     return *ready_ns >= *source_ns;
+}
+
+bool FrameGenerator::dump_outputs(unsigned slot, const char* directory) {
+    if (slot >= kFrameSlots || !directory || !*directory || !device_ || !feature_created_ ||
+        !frames_[slot].pending || !evaluation_finished(slot)) return false;
+
+    struct Capture {
+        const OwnedImage* image;
+        std::string name;
+        VkDeviceSize offset;
+        bool hud;
+    };
+    std::vector<Capture> captures;
+    VkDeviceSize bytes = 0;
+    const auto add = [&](const OwnedImage& image, const char* name, bool hud = false) {
+        if (!image.image || !image.width || !image.height ||
+            (image.format != VK_FORMAT_R8G8B8A8_UNORM && image.format != VK_FORMAT_R8G8B8A8_SRGB &&
+             image.format != VK_FORMAT_B8G8R8A8_UNORM && image.format != VK_FORMAT_B8G8R8A8_SRGB)) return false;
+        captures.push_back({&image, name, bytes, hud});
+        bytes += static_cast<VkDeviceSize>(image.width) * image.height * 4;
+        return true;
+    };
+    auto& frame = frames_[slot];
+    if (!add(frame.input, "input.png") || !add(frame.real_copy, "real.png")) return false;
+    for (unsigned i = 0; i < generated_count_; ++i) {
+        const std::string name = "generated-" + std::to_string(i + 1) + ".png";
+        if (!add(frame.generated[i], name.c_str())) return false;
+    }
+    if (active_backend_ == 1 && !add(frame.hud_mask, "hud.png", true)) return false;
+
+    // This pool is independent of the producer's evaluation command pool.
+    // The caller's slot lease protects these images until readback completes.
+    struct Readback {
+        VkDevice device;
+        VkCommandPool pool = VK_NULL_HANDLE;
+        VkBuffer buffer = VK_NULL_HANDLE;
+        VkDeviceMemory memory = VK_NULL_HANDLE;
+        VkFence fence = VK_NULL_HANDLE;
+        void* mapped = nullptr;
+        ~Readback() {
+            if (mapped) vkUnmapMemory(device, memory);
+            if (fence) vkDestroyFence(device, fence, nullptr);
+            if (pool) vkDestroyCommandPool(device, pool, nullptr);
+            if (buffer) vkDestroyBuffer(device, buffer, nullptr);
+            if (memory) vkFreeMemory(device, memory, nullptr);
+        }
+    } readback{device_};
+    VkBufferCreateInfo buffer_info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    buffer_info.size = bytes;
+    buffer_info.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    if (vkCreateBuffer(device_, &buffer_info, nullptr, &readback.buffer) != VK_SUCCESS) return false;
+    VkMemoryRequirements requirements{};
+    vkGetBufferMemoryRequirements(device_, readback.buffer, &requirements);
+    const auto memory_type = find_memory_type(phys_, requirements.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (memory_type == UINT32_MAX) return false;
+    VkMemoryAllocateInfo allocate{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    allocate.allocationSize = requirements.size;
+    allocate.memoryTypeIndex = memory_type;
+    if (vkAllocateMemory(device_, &allocate, nullptr, &readback.memory) != VK_SUCCESS ||
+        vkBindBufferMemory(device_, readback.buffer, readback.memory, 0) != VK_SUCCESS) return false;
+    VkCommandPoolCreateInfo pool_info{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+    pool_info.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+    pool_info.queueFamilyIndex = queue_family_;
+    if (vkCreateCommandPool(device_, &pool_info, nullptr, &readback.pool) != VK_SUCCESS) return false;
+    VkCommandBufferAllocateInfo command_info{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    command_info.commandPool = readback.pool;
+    command_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    command_info.commandBufferCount = 1;
+    VkCommandBuffer command = VK_NULL_HANDLE;
+    if (vkAllocateCommandBuffers(device_, &command_info, &command) != VK_SUCCESS) return false;
+    VkFenceCreateInfo fence_info{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    if (vkCreateFence(device_, &fence_info, nullptr, &readback.fence) != VK_SUCCESS) return false;
+    VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    if (vkBeginCommandBuffer(command, &begin) != VK_SUCCESS) return false;
+
+    for (const auto& capture : captures) {
+        const auto& image = *capture.image;
+        VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        barrier.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = image.image;
+        barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             0, 0, nullptr, 0, nullptr, 1, &barrier);
+        VkBufferImageCopy copy{};
+        copy.bufferOffset = capture.offset;
+        copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        copy.imageExtent = {image.width, image.height, 1};
+        vkCmdCopyImageToBuffer(command, image.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                               readback.buffer, 1, &copy);
+        barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+        vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                             0, 0, nullptr, 0, nullptr, 1, &barrier);
+    }
+    VkMemoryBarrier host_barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    host_barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    host_barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+    vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT,
+                         0, 1, &host_barrier, 0, nullptr, 0, nullptr);
+    if (vkEndCommandBuffer(command) != VK_SUCCESS) return false;
+
+    // Enqueue under the renderer lock so a streamed renderer's recorder sees
+    // this command after the frame producer. Never hold that lock while waiting.
+    host_gpu_lock();
+    const auto ticket = host_gpu_submit_presenter(command, nullptr, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                                                 nullptr, readback.fence);
+    host_gpu_unlock();
+    if (!ticket) {
+        VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+        submit.commandBufferCount = 1;
+        submit.pCommandBuffers = &command;
+        host_gpu_queue_lock();
+        VkLatencySubmissionPresentIdNV attribution{};
+        host::reflex::prepare_submit(queue_, 0, submit, attribution);
+        host::reflex::on_foreign_submit_begin(0);
+        const auto result = vkQueueSubmit(queue_, 1, &submit, readback.fence);
+        host::reflex::on_foreign_submit_end(0);
+        host_gpu_queue_unlock();
+        if (result != VK_SUCCESS) return false;
+    }
+    host_gpu_wait_submitted(ticket);
+    if (vkWaitForFences(device_, 1, &readback.fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS ||
+        vkMapMemory(device_, readback.memory, 0, bytes, 0, &readback.mapped) != VK_SUCCESS) return false;
+
+    bool success = true;
+    for (const auto& capture : captures) {
+        const auto& image = *capture.image;
+        const auto* pixels = static_cast<const std::uint8_t*>(readback.mapped) + capture.offset;
+        const bool bgra = image.format == VK_FORMAT_B8G8R8A8_UNORM || image.format == VK_FORMAT_B8G8R8A8_SRGB;
+        const auto write = [&](const std::string& name, bool alpha) {
+            ImageFile output;
+            if (!output.open(std::string(directory) + "/" + name, image.width, image.height)) return false;
+            std::vector<std::uint8_t> row(static_cast<std::size_t>(image.width) * 3);
+            for (std::uint32_t y = 0; y < image.height; ++y) {
+                for (std::uint32_t x = 0; x < image.width; ++x) {
+                    const auto* p = pixels + (static_cast<std::size_t>(y) * image.width + x) * 4;
+                    row[x * 3] = alpha ? p[3] : p[bgra ? 2 : 0];
+                    row[x * 3 + 1] = alpha ? p[3] : p[1];
+                    row[x * 3 + 2] = alpha ? p[3] : p[bgra ? 0 : 2];
+                }
+                if (!output.row(row.data())) return false;
+            }
+            return output.close();
+        };
+        success = write(capture.name, false) && success;
+        if (capture.hud) success = write("hud-mask.png", true) && success;
+    }
+    host_log("framegen: diagnostic capture %s in %s (slot %u, %ux%u)",
+             success ? "written" : "failed", directory, slot, width_, height_);
+    return success;
 }
 
 FrameGenerator& fg_get() {

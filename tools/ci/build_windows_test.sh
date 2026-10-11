@@ -19,6 +19,7 @@ done
 grep -q '^Vulkan_LIBRARY:.*=.*libvulkan-1' build-win/CMakeCache.txt
 grep -q 'src/host/dlaa.cpp' build-win/build.ninja
 grep -q 'src/host/frame_generation.cpp' build-win/build.ninja
+grep -q 'src/host/reflex.cpp' build-win/build.ninja
 cmake --build build-win --parallel "$CMAKE_BUILD_PARALLEL_LEVEL" --target \
   bbhost bb_plugin_randomizer bb_plugin_boss_rush bb_plugin_mutators bb_plugin_debug_menu \
   display_settings_test presentation_coordinates_test fg_timing_test motion_history_test \

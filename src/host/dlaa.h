@@ -88,6 +88,7 @@ struct DlssFgGuides {
     float frame_ms = 16.66f;
     std::int32_t reset = 1;
     std::uint64_t frame_index = 0;
+    std::uint64_t reflex_frame_id = 0; // simulation ID, independent of temporal history
     std::uint64_t render_frame_index = 0; // original HDR anchor, retained across display copies
     bool valid = false;
 };

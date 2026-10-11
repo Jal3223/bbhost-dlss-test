@@ -198,6 +198,8 @@ LauncherResult launcher_run(const HostConfig& cfg, const std::string& reason, bo
     int frame_generation = host_opt_index("frame_generation");
     if (fg_backend == 1 && frame_generation > 1) frame_generation = 1;
     bool object_motion = host_opt_get("object_motion");
+    int reflex_mode = host_opt_index("reflex");
+    if (reflex_mode < 0) reflex_mode = host::parse_reflex_mode(cfg.reflex_mode);
     static const char* const kResolutions[] = {"1280x720",         "1600x900",         "1920x1080",        "2560x1440",
                                                "3200x1800",        "3840x2160",        "2560x1080 (21:9)", "3440x1440 (21:9)",
                                                "5120x2160 (21:9)", "3840x1080 (32:9)", "5120x1440 (32:9)", "1280x800 (16:10)",
@@ -206,6 +208,7 @@ LauncherResult launcher_run(const HostConfig& cfg, const std::string& reason, bo
     static const char* const kDlssLabels[] = {"Off", "Native AA", "Quality", "Balanced", "Performance", "Ultra Performance"};
     static const char* const kFgBackendLabels[] = {"DLSS", "FSR 3.1"};
     static const char* const kFgLabels[] = {"Off", "2x", "3x", "4x"};
+    static const char* const kReflexLabels[] = {"Off", "On", "On + Boost"};
     // The game's frame rate (engine/frame_rate.h): 0 is uncapped.
     static const int kCaps[] = {30, 60, 90, 0};
     int cap_choice = frame_cap == 30 ? 0 : frame_cap == 60 ? 1 : frame_cap == 90 ? 2 : 3;
@@ -320,6 +323,7 @@ LauncherResult launcher_run(const HostConfig& cfg, const std::string& reason, bo
         e.push_back({"dlss", "frame_generation", frame_generation ? "true" : "false"});
         e.push_back({"dlss", "frame_generation_factor", std::to_string(std::max(2, (fg_backend == 1 && frame_generation > 1 ? 1 : frame_generation) + 1))});
         e.push_back({"dlss", "object_motion", object_motion ? "true" : "false"});
+        e.push_back({"dlss", "reflex", toml_string(host::ReflexModes[reflex_mode])});
         // What this bbhost's file looks like (core/config.h): a value saved
         // from here is a choice.
         e.push_back({"bbhost", "config_version", std::to_string(kUserConfigVersion)});
@@ -347,6 +351,7 @@ LauncherResult launcher_run(const HostConfig& cfg, const std::string& reason, bo
         host_opt_set_index("fg_backend", fg_backend);
         host_opt_set_index("frame_generation", fg_backend == 1 && frame_generation > 1 ? 1 : frame_generation);
         host_opt_set("object_motion", object_motion);
+        host_opt_set_index("reflex", reflex_mode);
         if (resolution == 14) host_opt_set_custom_resolution(custom_width, custom_height);
         else host_opt_set_resolution_index(resolution);
         for (const Enhancement& x : enhancements) host_opt_set(x.key, x.on);
@@ -698,6 +703,10 @@ LauncherResult launcher_run(const HostConfig& cfg, const std::string& reason, bo
             else
                 ImGui::SetTooltip("2x adds one generated frame. Experimental 3x/4x may have uneven pacing under FPS limits.");
         }
+        ImGui::SetNextItemWidth(200 * scale);
+        ImGui::Combo("NVIDIA Reflex", &reflex_mode, kReflexLabels, 3);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Uses NVIDIA's native Vulkan low-latency API to pace frame start. Boost requests higher GPU clocks. Unsupported drivers retain ordinary pacing.");
         ImGui::Checkbox("Object motion vectors", &object_motion);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Tracks animated meshes for reconstruction and frame generation. Uses extra GPU time and about 128 MiB plus the motion image.");

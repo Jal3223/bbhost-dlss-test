@@ -25,7 +25,7 @@ find_file(NGX_STATIC_LIB nvsdk_ngx_s.lib
 
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
-add_library(ngx_bridge SHARED ngx_bridge.cpp ngx_bridge.h)
+add_library(ngx_bridge SHARED ngx_bridge.cpp ngx_bridge.h ngx_transfer_sync.h)
 target_compile_features(ngx_bridge PRIVATE cxx_std_17)
 target_include_directories(ngx_bridge PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
@@ -41,3 +41,10 @@ target_compile_features(ngx_probe PRIVATE cxx_std_17)
 target_include_directories(ngx_probe PRIVATE ${VULKAN_INCLUDE_PATH})
 target_compile_definitions(ngx_probe PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 target_link_libraries(ngx_probe PRIVATE ngx_bridge)
+
+enable_testing()
+add_executable(ngx_transfer_sync_test ngx_transfer_sync_test.cpp)
+target_compile_features(ngx_transfer_sync_test PRIVATE cxx_std_17)
+target_include_directories(ngx_transfer_sync_test PRIVATE ${VULKAN_INCLUDE_PATH})
+target_compile_definitions(ngx_transfer_sync_test PRIVATE VK_NO_PROTOTYPES NOMINMAX WIN32_LEAN_AND_MEAN)
+add_test(NAME ngx_transfer_sync COMMAND ngx_transfer_sync_test)

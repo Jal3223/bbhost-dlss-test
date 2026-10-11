@@ -1,3 +1,4 @@
+#include "host/reflex.h"
 // See dlaa.h.
 #include "host/dlaa.h"
 
@@ -1324,6 +1325,7 @@ void dlaa_anchor_locked(const std::uint64_t* sampled, int count) {
         guides.valid = true;
         guides.frame_index = g_s.evaluations + 1;
         guides.render_frame_index = guides.frame_index;
+        guides.reflex_frame_id = host::reflex::cp_thread_frame_id();
         guides.width = scene->width; guides.height = scene->height;
         guides.depth_format = VK_FORMAT_R32_SFLOAT; guides.motion_format = VK_FORMAT_R16G16_SFLOAT;
         guides.frame_ms = ms; guides.reset = e.reset;

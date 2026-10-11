@@ -94,6 +94,7 @@ enum SettingId {
     kDlssMode,
     kFgBackend,
     kFrameGeneration,
+    kReflex,
     kSettingCount,
 };
 
@@ -260,6 +261,8 @@ Setting g_set[kSettingCount] = {
      "Frame generation provider: DLSS (RTX 40 series or newer) or experimental FSR 3.1 (2x only; fast motion can show interpolation artifacts). Requires a restart.", true},
     {"frame_generation", "Frame generation", {"Off", "2x", "3x", "4x"}, 0,
      "Adds a generated frame between game frames. FSR FG supports 2x only. Experimental 3x/4x can have uneven pacing under FPS limits. Requires a restart.", true},
+    {"reflex", "NVIDIA Reflex", {"Off", "On", "On + Boost"}, 1,
+     "Paces frame start to reduce GPU queue latency on supported NVIDIA drivers. Boost requests higher GPU clocks. Requires a restart.", true},
 };
 
 const Row g_rows[] = {
@@ -288,6 +291,7 @@ const Row g_rows[] = {
     {Row::Option, nullptr, kDlssMode},
     {Row::Option, nullptr, kFgBackend},
     {Row::Option, nullptr, kFrameGeneration},
+    {Row::Option, nullptr, kReflex},
     {Row::Option, nullptr, kObjectMotion},
     {Row::Option, nullptr, kDepthOfField},
     {Row::Option, nullptr, kChromaticAberration},
@@ -734,6 +738,7 @@ void rebuild_settings() {
     h.upscaler_backend = index_of(kUpscalerBackend);
     h.dlss_mode = index_of(kDlssMode);
     h.frame_generation_backend = index_of(kFgBackend);
+    h.reflex_mode = index_of(kReflex);
     h.frame_generation = on_of(kFrameGeneration);
     h.frame_generation_factor = std::max(2, index_of(kFrameGeneration) + 1);
     if (h.frame_generation_backend == 1 && h.frame_generation_factor > 2) {
@@ -888,6 +893,7 @@ void host_options_load() {
     g_set[kUpscalerBackend].index = host::parse_upscaler_backend(config().upscaler_backend);
     g_set[kDlssMode].index = host::dlss_mode_index(config().dlss_mode);
     g_set[kFgBackend].index = host::parse_fg_backend(config().frame_generation_backend);
+    g_set[kReflex].index = host::parse_reflex_mode(config().reflex_mode);
     g_set[kFrameGeneration].index = config().dlss_frame_generation ?
         std::clamp(config().dlss_fg_factor, 2, static_cast<int>(g_set[kFrameGeneration].values.size())) - 1 : 0;
     if (g_set[kFgBackend].index == 1 && g_set[kFrameGeneration].index > 1) {
@@ -926,7 +932,7 @@ void host_options_load() {
                          static_cast<int>(kModelDetail), static_cast<int>(kChangeAppearance),
                          static_cast<int>(kRebirth), static_cast<int>(kFivePlayers), static_cast<int>(kObjectMotion),
                          static_cast<int>(kUpscalerBackend), static_cast<int>(kDlssMode),
-                         static_cast<int>(kFgBackend), static_cast<int>(kFrameGeneration)})
+                         static_cast<int>(kFgBackend), static_cast<int>(kFrameGeneration), static_cast<int>(kReflex)})
         g_default_index[static_cast<std::size_t>(id)] = g_set[id].index;
     const std::string path = options_path();
     FILE* f = std::fopen(path.c_str(), "r");
@@ -1066,6 +1072,8 @@ void host_options_load() {
         g_set[kUpscalerBackend].index = host::parse_upscaler_backend(e);
     if (const char* e = std::getenv("BBHOST_FG_BACKEND"); e && e[0])
         g_set[kFgBackend].index = host::parse_fg_backend(e);
+    if (const char* e = std::getenv("BBHOST_REFLEX"); e && e[0])
+        g_set[kReflex].index = host::parse_reflex_mode(e);
     if (const char* e = std::getenv("BBHOST_DLSS_MODE"); e && e[0])
         g_set[kDlssMode].index = host::dlss_mode_index(e);
     if (const char* e = std::getenv("BBHOST_DLSS_FG"); e && e[0])

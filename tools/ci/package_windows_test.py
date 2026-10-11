@@ -36,11 +36,13 @@ for name in ['LICENSE', 'LICENSE-FSR.txt', 'bbhost.example.toml', 'docs/dlaa.md'
              'docs/dlss-development.md', 'docs/windows-test-build.md', 'docs/running.md',
              'tools/win/run-bbhost.bat', 'tools/win/Build-NGX.ps1', 'tools/win/Complete-DLSS.ps1',
              'tools/win/Test-DLSS-Install.ps1', 'tools/win/Install-FSR4.ps1',
-             'tools/win/Install-FSR4.bat', 'docs/fsr.md', 'include/bbhost_plugin.h']:
+             'tools/win/Install-FSR4.bat', 'docs/fsr.md', 'docs/reflex.md', 'tools/win/analyze_reflex.py',
+             'include/bbhost_plugin.h']:
     copy(name, 'run-bbhost.bat' if name.endswith('/run-bbhost.bat') else None)
 shutil.copytree(ROOT / 'patches', stage / 'patches')
 # These are the project's bridge sources, not NVIDIA SDK headers/libraries.
-for name in ['CMakeLists.txt', 'ngx_bridge.cpp', 'ngx_bridge.h', 'ngx_probe.cpp', 'ngx_gpu_test.cpp', 'BBPORT-NOTICE.txt']:
+for name in ['CMakeLists.txt', 'ngx_bridge.cpp', 'ngx_bridge.h', 'ngx_transfer_sync.h', 'ngx_transfer_sync_test.cpp',
+             'ngx_probe.cpp', 'ngx_gpu_test.cpp', 'BBPORT-NOTICE.txt']:
     copy('tools/ngx_bridge/' + name)
 for source in (ROOT / 'third_party').rglob('*'):
     if source.is_file() and ('license' in source.name.lower() or 'copying' in source.name.lower()):
@@ -76,7 +78,8 @@ manifest = {'repository': 'Jal3223/bbhost-dlss-test', 'commit': sha,
     'Use a separate folder and back up your saves before gameplay testing.\n'
     'Double-click run-bbhost.bat to set up your own game files. No game files are included.\n'
     'Standard cloud runners validate CPU tests/startup, not DLSS pixels, performance, or latency.\n'
-    'Reflex is not integrated in this branch. Normal frame generation is Off/2x.\n')
+    'Native Vulkan Reflex (VK_NV_low_latency2) is built in: Off / On / On + Boost in Setup or F10, default On.\n'
+    'Normal frame generation is Off/2x; 3x/4x stay behind BBHOST_EXPERIMENTAL_MFG=1. See docs/reflex.md.\n')
 
 # The expected PE filenames are explicit; no glob can pick up NVIDIA DLLs.
 allowed_pe = {'bbhost.exe'} | {'plugins/' + n + '.dll' for n in ['randomizer', 'boss_rush', 'mutators', 'debug_menu']} | {

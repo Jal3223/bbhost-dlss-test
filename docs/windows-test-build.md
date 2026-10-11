@@ -8,7 +8,8 @@ pull request, release, signing key, or announcement is part of this setup.
 
 - Experimental repository: `FIocker/bbhost` (the second character is a capital I).
 - Branch: `render/dlss-sr-framegen-pipeline`.
-- Reviewed commit: `1e82facba1a77afdf75b7cfb3aabb5bfc8c5c380`.
+- Reviewed commit: `1c83fde08b432ca84184221ac9fefe22fc40178f` (pull request droogie/bbhost#73).
+- Previous reviewed commit: `1e82facba1a77afdf75b7cfb3aabb5bfc8c5c380`, still built by the `dlss-windows-test` branch.
 - The fork's `dlss-windows-test` branch adds only CI, packaging, and documentation.
 - The pre-build check rejects changes to reviewed host/renderer/bridge sources.
 
@@ -125,6 +126,7 @@ Back up saves before testing. This build still uses bbhost's normal per-user
 configuration/save locations even when extracted to a separate folder.
 Start with Quality reconstruction and Off/2x generation, restart after changing
 temporal settings, and keep simulation at 60 FPS for multiplayer compatibility.
-3x/4x remain experimental and are not enabled by this workflow. Reflex is absent.
+3x/4x remain experimental and are not enabled by this workflow. Native Vulkan
+Reflex (`VK_NV_low_latency2`) is integrated and defaults to On; see `docs/reflex.md`.
 Cloud compilation and CPU tests do not verify gameplay, DLSS image quality,
 frame pacing on your monitor, or input latency. See `docs/dlss-development.md`.

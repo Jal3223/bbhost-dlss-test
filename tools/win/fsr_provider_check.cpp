@@ -15,6 +15,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <vector>
 
@@ -478,11 +479,31 @@ int main() {
         return res;
     };
 
-    // 16 consecutive frames (warming history >= 8 frames)
-    const int totalFrames = 16;
+    // A camera translating left sees a stationary foreground plane move 16
+    // render pixels/frame (24 display pixels at 30 Hz). The background plane
+    // is ten times farther away and moves by 1.6 pixels: color, depth, vectors,
+    // and camera position must all describe the same motion.
     const int rectW = 120, rectH = 80;
     const int rectVy = 0;
-    const int rectVx = 16; // 16 pixels displacement per frame
+    const char* speed = std::getenv("BBHOST_FSR_FIXTURE_MOTION_PX");
+    const int rectVx = speed ? std::clamp(std::atoi(speed), 16, 64) : 16;
+    // Keep both measured endpoints in view at higher diagnostic pan speeds.
+    const int totalFrames = std::min(16, static_cast<int>((rw - rectW - 40) / rectVx) + 1);
+    std::printf("Camera fixture: %d render pixels/frame, %d frames at 30 source FPS\n", rectVx, totalFrames);
+    const float nearPlane = 0.1f, farPlane = 1000.0f;
+    const float verticalFov = 1.0471975512f;
+    const float foregroundZ = 2.0f, backgroundZ = 20.0f;
+    const float focalPixels = rh / (2.0f * std::tan(verticalFov * 0.5f));
+    const float cameraStep = -rectVx * foregroundZ / focalPixels;
+    const float backgroundVx = rectVx * foregroundZ / backgroundZ;
+    const auto deviceDepth = [&](float z) {
+        // Standard finite perspective depth: near=0, far=1, looking down -Z.
+        return farPlane / (farPlane - nearPlane) -
+               farPlane * nearPlane / ((farPlane - nearPlane) * z);
+    };
+    const auto backgroundGreen = [](float x, float y) {
+        return 0.12f + 0.08f * std::sin(x * 0.12f) * std::cos(y * 0.06f);
+    };
 
     std::vector<uint16_t> prevRealImage(ow * oh * 4, 0);
     std::vector<uint16_t> currentRealImage(ow * oh * 4, 0);
@@ -509,8 +530,8 @@ int main() {
             ffxVkFsr3_3_1_6FrameGenerationContextRetireFrame(fgContext, retireId);
         }
 
-        // Moving rectangle: rectX moves across frames
-        const int rectX = 40 + (frame * rectVx) % (static_cast<int>(rw) - rectW - 40);
+        // No wraparound/camera cuts during the history warmup.
+        const int rectX = 40 + frame * rectVx;
         const int rectY = 140;
 
         void* mapped = nullptr;
@@ -540,17 +561,19 @@ int main() {
                     pColor[idx * 4 + 1] = float_to_half(0.9f);
                     pColor[idx * 4 + 2] = float_to_half(0.9f);
                     pColor[idx * 4 + 3] = float_to_half(1.0f);
-                    pDepth[idx] = 0.35f;
+                    pDepth[idx] = deviceDepth(foregroundZ);
                     pMotion[idx * 2 + 0] = float_to_half(mvX);
                     pMotion[idx * 2 + 1] = float_to_half(mvY);
                 } else {
-                    // Background
+                    // Textured stationary world at the farther plane. Uniform
+                    // backgrounds cannot detect incorrect camera vectors.
                     pColor[idx * 4 + 0] = float_to_half(0.05f);
-                    pColor[idx * 4 + 1] = float_to_half(0.05f);
+                    pColor[idx * 4 + 1] = float_to_half(backgroundGreen(
+                        x + 0.5f - frame * backgroundVx, y + 0.5f));
                     pColor[idx * 4 + 2] = float_to_half(0.08f);
                     pColor[idx * 4 + 3] = float_to_half(1.0f);
-                    pDepth[idx] = 0.98f;
-                    pMotion[idx * 2 + 0] = float_to_half(0.0f);
+                    pDepth[idx] = deviceDepth(backgroundZ);
+                    pMotion[idx * 2 + 0] = float_to_half(-backgroundVx);
                     pMotion[idx * 2 + 1] = float_to_half(0.0f);
                 }
             }
@@ -619,20 +642,22 @@ int main() {
         srDispatch.output = rOutput;
         srDispatch.jitterOffsetX = 0.0f;
         srDispatch.jitterOffsetY = 0.0f;
-        srDispatch.motionVectorScaleX = static_cast<float>(rw);
-        srDispatch.motionVectorScaleY = static_cast<float>(rh);
+        // Input vectors already use pixels. AMD normalizes scale by extent
+        // internally; a dimension-sized scale is only for normalized vectors.
+        srDispatch.motionVectorScaleX = 1.0f;
+        srDispatch.motionVectorScaleY = 1.0f;
         srDispatch.renderWidth = rw;
         srDispatch.renderHeight = rh;
         srDispatch.upscaleWidth = ow;
         srDispatch.upscaleHeight = oh;
-        srDispatch.frameTimeMilliseconds = 16.6667f;
+        srDispatch.frameTimeMilliseconds = 1000.0f / 30.0f;
         srDispatch.preExposure = 1.0f;
         srDispatch.enableSharpening = VK_TRUE;
         srDispatch.sharpness = 0.5f;
         srDispatch.reset = (frame == 0) ? VK_TRUE : VK_FALSE;
-        srDispatch.cameraNear = 0.1f;
-        srDispatch.cameraFar = 1000.0f;
-        srDispatch.cameraVerticalFovRadians = 1.0471975512f;
+        srDispatch.cameraNear = nearPlane;
+        srDispatch.cameraFar = farPlane;
+        srDispatch.cameraVerticalFovRadians = verticalFov;
         srDispatch.viewSpaceToMeters = 1.0f;
         srDispatch.frameId = frameId;
 
@@ -653,19 +678,20 @@ int main() {
         fgPrep.motionVectors = fgImageInfo(slot.motion, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         fgPrep.renderWidth = rw;
         fgPrep.renderHeight = rh;
-        fgPrep.motionVectorScaleX = static_cast<float>(rw);
-        fgPrep.motionVectorScaleY = static_cast<float>(rh);
-        fgPrep.frameTimeMilliseconds = 16.6667f;
+        fgPrep.motionVectorScaleX = 1.0f;
+        fgPrep.motionVectorScaleY = 1.0f;
+        fgPrep.frameTimeMilliseconds = 1000.0f / 30.0f;
         fgPrep.minLuminance = 0.0f;
         fgPrep.maxLuminance = 1.0f;
         fgPrep.transferFunction = FFX_VK_FSR3_3_1_6_FRAMEGEN_TRANSFER_SRGB;
-        fgPrep.cameraNear = 0.1f;
-        fgPrep.cameraFar = 1000.0f;
+        fgPrep.cameraNear = nearPlane;
+        fgPrep.cameraFar = farPlane;
         fgPrep.viewSpaceToMeters = 1.0f;
-        fgPrep.cameraVerticalFovRadians = 1.0471975512f;
+        fgPrep.cameraVerticalFovRadians = verticalFov;
         fgPrep.cameraUp[1] = 1.0f;
         fgPrep.cameraRight[0] = 1.0f;
         fgPrep.cameraForward[2] = -1.0f;
+        fgPrep.cameraPosition[0] = frame * cameraStep;
         fgPrep.frameId = frameId;
         fgPrep.reset = (frame == 0) ? VK_TRUE : VK_FALSE;
 
@@ -680,11 +706,11 @@ int main() {
         fgDisp.output = fgImageInfo(slot.fgOutput, VK_IMAGE_LAYOUT_GENERAL);
         fgDisp.displayWidth = ow;
         fgDisp.displayHeight = oh;
-        fgDisp.frameTimeMilliseconds = 16.6667f;
-        fgDisp.cameraNear = 0.1f;
-        fgDisp.cameraFar = 1000.0f;
+        fgDisp.frameTimeMilliseconds = 1000.0f / 30.0f;
+        fgDisp.cameraNear = nearPlane;
+        fgDisp.cameraFar = farPlane;
         fgDisp.viewSpaceToMeters = 1.0f;
-        fgDisp.cameraVerticalFovRadians = 1.0471975512f;
+        fgDisp.cameraVerticalFovRadians = verticalFov;
         fgDisp.maxLuminance = 1.0f;
         fgDisp.transferFunction = FFX_VK_FSR3_3_1_6_FRAMEGEN_TRANSFER_SRGB;
         fgDisp.frameId = frameId;
@@ -849,32 +875,63 @@ int main() {
     double expectedMidX = (prevCentroidX + currentCentroidX) * 0.5;
     double midDelta = std::abs(fgCentroidX - expectedMidX);
     std::printf("  FG Midpoint Delta from expected (%.2f): %.2f pixels\n", expectedMidX, midDelta);
-    if (midDelta > 6.0) {
+    if (midDelta > 2.0) {
         std::fprintf(stderr, "FAIL: Generated FG centroid is too far from true midpoint!\n");
         return 1;
     }
 
-    // Bounded Background Error:
-    // Sample a large background region away from the moving rectangle (y in [20, 100], x in [20, ow - 20])
+    // A crossfade has the right centroid but leaves doubled edges. Compare the
+    // whole foreground silhouette with the analytic halfway camera pose.
+    const double displayScale = static_cast<double>(ow) / rw;
+    const double halfwayFrame = totalFrames - 1.5;
+    const double halfwayRectX = (40 + halfwayFrame * rectVx) * displayScale;
+    size_t intersection = 0, unionCount = 0, foregroundArea = 0, expectedArea = 0;
+    for (uint32_t y = 0; y < oh; ++y) {
+        for (uint32_t x = 0; x < ow; ++x) {
+            const size_t p = (y * ow + x) * 4;
+            const bool actual = (half_to_float(currentFgImage[p + 1]) +
+                                 half_to_float(currentFgImage[p + 2])) * 0.5f > 0.35f;
+            const bool expected = x + 0.5 >= halfwayRectX &&
+                                  x + 0.5 < halfwayRectX + rectW * displayScale &&
+                                  y + 0.5 >= 140 * displayScale &&
+                                  y + 0.5 < (140 + rectH) * displayScale;
+            foregroundArea += actual;
+            expectedArea += expected;
+            intersection += actual && expected;
+            unionCount += actual || expected;
+        }
+    }
+    const double silhouetteIoU = unionCount ? static_cast<double>(intersection) / unionCount : 0.0;
+    const double areaError = expectedArea ? std::abs(static_cast<double>(foregroundArea) / expectedArea - 1.0) : 1.0;
+    std::printf("  Midpoint foreground silhouette IoU: %.4f, area error: %.4f\n", silhouetteIoU, areaError);
+    if (silhouetteIoU < 0.93 || areaError > 0.07) {
+        std::fprintf(stderr, "FAIL: Fast camera pan warped or doubled the foreground silhouette!\n");
+        return 1;
+    }
+
+    // Analytic textured background at the halfway camera pose, sampled away
+    // from foreground disocclusions and output borders.
     double bgErrorSum = 0.0;
     size_t bgCount = 0;
     for (uint32_t y = 20; y < 100; ++y) {
         for (uint32_t x = 20; x < ow - 20; ++x) {
             size_t p = (y * ow + x) * 4;
             float fgG = half_to_float(currentFgImage[p + 1]);
-            float curG = half_to_float(currentRealImage[p + 1]);
-            bgErrorSum += std::abs(fgG - curG);
+            const float referenceG = backgroundGreen(
+                static_cast<float>((x + 0.5) / displayScale - halfwayFrame * backgroundVx),
+                static_cast<float>((y + 0.5) / displayScale));
+            bgErrorSum += std::abs(fgG - referenceG);
             bgCount++;
         }
     }
     double meanBgError = bgErrorSum / bgCount;
-    std::printf("  Mean background error between FG and Real: %.4f\n", meanBgError);
-    if (meanBgError > 0.05) {
-        std::fprintf(stderr, "FAIL: Background in generated frame deviated too much from real background!\n");
+    std::printf("  Mean background error against analytic midpoint: %.4f\n", meanBgError);
+    if (meanBgError > 0.0125) {
+        std::fprintf(stderr, "FAIL: Camera pan background deviated too much from the analytic midpoint!\n");
         return 1;
     }
 
-    std::printf("PASS: Output images are non-empty, finite, and FG produces genuine midpoint content distinct from both endpoints with bounded background error.\n");
+    std::printf("PASS: Fast camera pan produces finite midpoint content with bounded silhouette, area, and textured background errors.\n");
 
     // Resize & retirement (< 100 frames bounded lifecycle check)
     std::printf("Testing resize lifecycle (640x360 -> 480x270 -> 720x405)...\n");

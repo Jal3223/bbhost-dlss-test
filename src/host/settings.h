@@ -29,6 +29,7 @@ struct HostSettings {
     int frame_generation_backend = 0; // 0 DLSS, 1 FSR3
     bool frame_generation = false; // captured at startup
     int frame_generation_factor = 2; // 2x/3x/4x, subject to NGX capabilities
+    int reflex_mode = 1; // Off, On, On + Boost; restart required
 
     // Camera: multipliers on LockCamParam's values (engine/camera.cpp)
     float fov_scale = 1.0f;              // 1.0 the game's own; +5% a step
