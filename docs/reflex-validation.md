@@ -41,22 +41,24 @@ limiter. The only A/B choice is Reflex Off versus On.
 
 | Run | Real FPS | Display changes/s | p99 display interval | Median input-to-present | p99 input-to-present |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Off / A | 52.00 | 103.38 | 13.89 ms | 79.16 ms | 87.62 ms |
-| On / A | 52.90 | 105.94 | 13.50 ms | 41.70 ms | 49.16 ms |
-| Off / B | 52.63 | 104.30 | 13.73 ms | 78.68 ms | 88.03 ms |
-| On / B | 52.93 | 105.60 | 13.20 ms | 41.50 ms | 47.31 ms |
+| Off / A | 48.63 | 96.87 | 13.74 ms | 83.95 ms | 91.62 ms |
+| On / A | 49.06 | 98.00 | 13.58 ms | 44.06 ms | 50.24 ms |
+| Off / B | 48.87 | 97.13 | 13.88 ms | 83.96 ms | 92.16 ms |
+| On / B | 48.40 | 97.01 | 15.16 ms | 45.06 ms | 54.09 ms |
 
-All four measured display windows have zero missing timing rows. Each On run
-skips one expired generated position in its sampled source window; Off skips
-none. No sampled resets suppress interpolation. The median driver-reported
-input-to-GPU-end interval changes from 80–81 ms to approximately 43 ms. Shared
+These are repeats on the deployed executable with the final WSI guard enabled.
+All four measured display windows have zero missing timing rows. Sampled
+expired-position counts are 0/3/1/1 in table order; no sampled resets suppress
+interpolation. The median driver-reported input-to-GPU-end interval changes
+from approximately 86 ms to 46–47 ms. Shared
 queue attribution has weaker precision than the tested dedicated compositor
 queue, so these GPU reports must not be generalized to that fallback.
 
 An earlier fixed 2 ms launch budget produced a 19.02 ms p99 display interval
-under this workload. Adapting the budget brought the exploratory repeat to
-13.57 ms and the two final On runs to 13.50/13.20 ms. This exploratory comparison
-is separate from the clean alternating A/B measurements above.
+under the earlier workload. Adapting the budget brought an exploratory repeat
+to 13.57 ms. Earlier pre-guard A/B rounds are retained separately in the CSV;
+their absolute cadence differs from the final repeats and must not be used as
+an isolated estimate of the guard's performance cost.
 
 ## Source-rate and changing-load checks
 
@@ -85,7 +87,7 @@ the selected game cap still at 60 and no diagnostic source throttle. The real
 GPU-bound cadence is 38.06 FPS; 2x reaches 76.37 display changes/s, with a
 16.62 ms p99 display interval and zero missing timing rows. One sampled generated
 position expires, with no sampled reset suppression. This run includes the
-subsequent narrow WSI guard; the earlier A/B table predates that guard.
+same narrow WSI guard as the final A/B table.
 
 At fixed 30 real FPS, experimental 3x reaches 90.01 display changes/s with
 14.62 ms p99 intervals; 4x reaches 120.00 with 10.82 ms p99 intervals. Both have
@@ -93,8 +95,19 @@ zero missing timing rows and sampled expired/suppressed positions. These are
 cadence checks on a 120 Hz display, not certification of interpolation quality
 or a reason to expose higher factors as ordinary supported settings.
 
+The final deployed build also repeats the eleven-megapixel workload with the
+higher factors. At a selected cap of 60 without a diagnostic throttle, 3x
+measures 35.54 real FPS / 105.37 display changes/s and a 15.89 ms p99 display
+interval; 18 sampled generated positions expire. With a diagnostic 30 FPS
+source throttle, 4x measures 30.01 / 119.96, p99 12.14 ms, and one expired
+position. Neither run has missing timing rows or sampled reset suppression.
+Median input-to-present is 62.45/66.62 ms respectively. Higher generated output
+does not recover input responsiveness, and GPU contention makes intervals less
+uniform than the fixed-source, lighter-workload checks. Both remain opt-in.
+
 [Aggregate measurements](data/reflex-validation-2026-10-11.csv) retain both A/B
-rounds, submission/display percentiles, driver intervals and failure counters.
+rounds before and after the WSI guard, heavy-load higher-factor checks,
+submission/display percentiles, driver intervals and failure counters.
 
 ## FSR pixel investigation
 
@@ -119,6 +132,21 @@ remain a limitation of the current analytical provider/integration; the passing
 fixture and mask do not prove every gameplay guide or occlusion case correct.
 No speculative vector sign/scale or HUD threshold adjustment is shipped.
 
+A separate audit checks previous-minus-current pixel motion against the SDK's
+previous-color sampling, finite non-inverted near/far reconstruction against
+the captured projection, and the snapshot/color frame IDs through prepare and
+dispatch. No mismatch is found in those paths. SDK disocclusion rejection and
+optical-flow/inpainting fallback are plausible contributors at thin foliage
+edges; the planar fixture cannot establish that as the exclusive cause or rule
+out every guide defect in gameplay.
+
+Final deployed-build readbacks during a sustained right-stick pan complete
+with object motion both Off and On. Fine foliage edges still show breakup in
+both, so disabling animated-mesh vectors does not eliminate that symptom.
+The captured poses differ slightly; this is an observational check rather than
+a matched-pixel quality score. Readback stalls and those runs are excluded from
+the performance CSV and tables.
+
 ## Synchronization limits
 
 NGX runtime 310.9.1 emits internal `nv.ngx.dlssg.resource` synchronization
@@ -141,7 +169,15 @@ check must not be described as a wholly warning-free validation run.
 The repeated DLSS 2x run with the WSI guard has no sleep/query threading
 conflicts and no `SYNC-HAZARD` reports. Eleven marker-overlap reports remain;
 they are retained rather than filtered. The standalone NGX probe still reports
-ten write-after-write and ten read-after-write hazards inside its evaluations.
+at least ten write-after-write and ten read-after-write hazards before the
+validation layer's repeated-message limit. Examples are private image
+transitions followed by clears/copies without the corresponding transfer
+access masks, and repeated private buffer fills. These operations are between
+entry and return of the vendor evaluation call; none of their reported resource
+handles belongs to a host input/output allocation. The probe's reconstruction,
+distinct temporal positions, reset/history and real-endpoint checks pass
+despite the diagnostics. Passing those checks does not establish that the
+missing synchronization is harmless on every driver.
 
 ## Build and menu checks
 
