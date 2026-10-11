@@ -54,7 +54,12 @@ This is a project policy, not legal advice.
    Double-click `Test-DLSS.bat`.
 
 The private workflow checks out this repository at the public run's commit. It
-refuses to build unless `tools/ngx_bridge` matches the reviewed bridge commit
-and `tools/win/Build-NGX.ps1`, `tools/win/Test-DLSS-Install.ps1` and
-`tools/ci/check_test_build.py` match their reviewed commit. A deliberate change
-to those scripts therefore also needs the pin updated in the private workflow.
+refuses to build unless `tools/ngx_bridge` matches one of its reviewed bridge
+commits (`1e82fac`, `1c83fde`). `tools/win/Build-NGX.ps1`,
+`tools/win/Test-DLSS-Install.ps1`, `tools/win/Install-FSR4.ps1` and
+`tools/ci/check_test_build.py` must match one of its reviewed script commits
+(`4e465ff`, `08c1c89`). A deliberate change to those files therefore also needs a
+reviewed commit added in the private workflow. It also preinstalls AMD's
+MIT-licensed FSR 4 v07 INT8 assets, checked against their published SHA-256
+manifests. It requires every bridge function the host source resolves, and runs
+the bridge's GPU-free transfer-dependency contract test.
