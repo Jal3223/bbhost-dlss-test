@@ -1,5 +1,11 @@
 # bbhost
 
+> **Unofficial personal test fork.** This branch builds Flocker's experimental
+> DLSS / Frame Generation pipeline for Windows. It is separate from the official
+> bbhost project. See [the reviewed build setup](docs/windows-test-build.md).
+> Public artifacts exclude NVIDIA SDK/runtime files and the SDK-linked bridge;
+> supply/build those locally to enable DLSS. No official release is published.
+
 bbhost is a translation layer that runs Bloodborne on Windows and Linux. The
 game's own 1.09 executable runs unmodified on the PC's x86-64 CPU; bbhost
 answers its calls into the PS4's system libraries with PC implementations, and
